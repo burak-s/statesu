@@ -43,3 +43,4 @@ go.work.sum
 # OS
 .DS_Store
 Thumbs.db
+docker-compose.yml
