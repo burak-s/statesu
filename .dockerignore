@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.*
+bin/
+*.db
+*.db-wal
+*.db-shm
+Dockerfile
+.dockerignore
+Makefile
+README*
+**/*_test.go

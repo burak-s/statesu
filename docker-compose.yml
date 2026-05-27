@@ -1,0 +1,20 @@
+services:
+   statesu:
+      build:
+         context: .
+         dockerfile: Dockerfile
+      container_name: statesu
+      restart: unless-stopped
+      expose:
+         - "8088"
+      networks:
+         - traefik_network
+      labels:
+         - "traefik.enable=true"
+         - "traefik.http.routers.personal-website.rule=Host(`stateus.com`) || Host(`www.stateus.com`)"
+         - "traefik.http.routers.personal-website.entrypoints=websecure"
+         - "traefik.http.routers.personal-website.tls.certresolver=letsencrypt"
+         - "traefik.http.services.personal-website.loadbalancer.server.port=8088"
+networks:
+   traefik_network:
+      external: true

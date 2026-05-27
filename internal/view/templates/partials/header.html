@@ -1,0 +1,19 @@
+{{define "header"}}
+<header class="bg-brand-500 text-white shadow-sm">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center justify-between">
+        <a href="/" class="text-xl font-bold tracking-tight hover:opacity-90 transition">Statesu</a>
+        <nav class="flex items-center gap-3">
+            {{if .UserID}}
+            <a href="/state/new" class="text-sm px-3 py-1.5 bg-white/15 hover:bg-white/25 rounded-lg transition font-medium">New State</a>
+            <button hx-post="/logout" hx-target="body" hx-swap="outerHTML"
+                class="text-sm px-3 py-1.5 bg-white/15 hover:bg-white/25 rounded-lg transition font-medium cursor-pointer">
+                Logout
+            </button>
+            {{else}}
+            <a href="/login" class="text-sm px-3 py-1.5 bg-white/15 hover:bg-white/25 rounded-lg transition font-medium">Login</a>
+            <a href="/register" class="text-sm px-3 py-1.5 bg-white hover:bg-white/90 text-brand-600 rounded-lg transition font-medium">Register</a>
+            {{end}}
+        </nav>
+    </div>
+</header>
+{{end}}

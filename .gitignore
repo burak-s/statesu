@@ -1,0 +1,45 @@
+# Build output
+/bin/
+
+# Generated CSS (built by `make css` / Tailwind stage in Dockerfile)
+/internal/view/static/app.css
+
+# Node (only if you ever switch to npm-based Tailwind)
+node_modules/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Go test/coverage artifacts
+*.test
+*.out
+coverage.*
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# SQLite database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
