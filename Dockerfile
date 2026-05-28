@@ -52,10 +52,9 @@ WORKDIR /app
 
 COPY --from=builder --chown=app:app /out/statesu /app/statesu
 
-ENV STATESU_ADDR=:8080 \
-    STATESU_DB=/data/stateu.db
+ENV STATESU_ADDR=:8088
 
-EXPOSE 8080
+EXPOSE 8088
 USER app:app
 
 ENTRYPOINT ["/app/statesu"]

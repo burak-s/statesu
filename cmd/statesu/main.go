@@ -9,6 +9,7 @@ import (
 	"statesu.com/internal/auth"
 	"statesu.com/internal/config"
 	"statesu.com/internal/crypto"
+	"statesu.com/internal/middleware"
 	"statesu.com/internal/page"
 	"statesu.com/internal/state"
 	"statesu.com/internal/view"
@@ -60,7 +61,7 @@ func main() {
 	pageHandler.Mount(mux)
 
 	log.Printf("listening on %s", cfg.Addr)
-	if err := http.ListenAndServe(cfg.Addr, mux); err != nil {
+	if err := http.ListenAndServe(cfg.Addr, middleware.CORS(mux)); err != nil {
 		log.Fatal(err)
 	}
 }
