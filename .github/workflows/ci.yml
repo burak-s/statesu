@@ -32,6 +32,9 @@ jobs:
          - name: Verify dependencies
            run: go mod verify
 
+         - name: Build CSS
+           run: make css
+
          - name: Vet
            run: go vet ./...
 
