@@ -26,7 +26,7 @@ jobs:
               ref: ${{ github.event.workflow_run.head_sha }}
 
          - name: Build & Restart
-           run: docker compose up --build -d
+           run: docker compose -f /home/burak/statesu-deploy/docker-compose.yml --project-directory . up --build -d
 
          - name: Prune old images
            run: docker image prune -f
