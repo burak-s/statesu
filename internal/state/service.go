@@ -23,18 +23,16 @@ type stateRepository interface {
 	Create(ctx context.Context, s model.State) error
 	ListByUserID(ctx context.Context, userID string, limit, offset int) ([]model.State, error)
 	CountByUserID(ctx context.Context, userID string) (int, error)
-	GetLatestByUserID(ctx context.Context, userID string) (model.State, error)
-	GetLatest(ctx context.Context) (model.State, string, error)
+	Latest(ctx context.Context, f model.StateFilter) (model.State, string, error)
 	GetByID(ctx context.Context, id string) (model.State, error)
 	DeleteByID(ctx context.Context, stateID, userID string) error
 }
 
 type ListResult struct {
-	Items  []model.State
-	Latest *model.State
-	Page   int
-	Size   int
-	Total  int
+	Items []model.State
+	Page  int
+	Size  int
+	Total int
 }
 
 type emailCipher interface {
@@ -85,11 +83,8 @@ func (s *Service) Create(ctx context.Context, userID, text string, expiresAt tim
 	return st, nil
 }
 
-func (s *Service) List(ctx context.Context, email string, page, size int) (ListResult, error) {
-	email = strings.TrimSpace(email)
-	if email == "" {
-		return ListResult{}, cerr.ErrInvalidInput
-	}
+func (s *Service) List(ctx context.Context, f model.StateFilter, page, size int) (ListResult, error) {
+	f.Email = strings.TrimSpace(f.Email)
 	if page < 1 {
 		page = 1
 	}
@@ -100,45 +95,57 @@ func (s *Service) List(ctx context.Context, email string, page, size int) (ListR
 		size = maxPageSize
 	}
 
-	u, err := s.users.GetByEmailHash(ctx, s.cipher.Hash(email))
-	if err != nil {
-		if errors.Is(err, cerr.ErrUserNotFound) {
-			return ListResult{Page: page, Size: size}, nil
+	if f.UserID == "" {
+		if f.Email == "" {
+			return ListResult{}, cerr.ErrInvalidInput
 		}
-		return ListResult{}, err
+		u, err := s.users.GetByEmailHash(ctx, s.cipher.Hash(f.Email))
+		if err != nil {
+			if errors.Is(err, cerr.ErrUserNotFound) {
+				return ListResult{Page: page, Size: size}, nil
+			}
+			return ListResult{}, err
+		}
+		f.UserID = u.ID
 	}
-	userID := u.ID
 
-	total, err := s.repo.CountByUserID(ctx, userID)
+	total, err := s.repo.CountByUserID(ctx, f.UserID)
 	if err != nil {
 		return ListResult{}, err
 	}
 
-	items, err := s.repo.ListByUserID(ctx, userID, size, (page-1)*size)
+	items, err := s.repo.ListByUserID(ctx, f.UserID, size, (page-1)*size)
 	if err != nil {
 		return ListResult{}, err
-	}
-
-	var latest *model.State
-	l, err := s.repo.GetLatestByUserID(ctx, userID)
-	if err != nil && !errors.Is(err, cerr.ErrStateNotFound) {
-		return ListResult{}, err
-	}
-	if err == nil {
-		latest = &l
 	}
 
 	return ListResult{
-		Items:  items,
-		Latest: latest,
-		Page:   page,
-		Size:   size,
-		Total:  total,
+		Items: items,
+		Page:  page,
+		Size:  size,
+		Total: total,
 	}, nil
 }
 
-func (s *Service) Latest(ctx context.Context) (model.State, string, error) {
-	st, encEmail, err := s.repo.GetLatest(ctx)
+// Latest returns the most recent state matching the filter, along with the
+// owner's decrypted email. When the filter carries an email it is resolved to a
+// user and the lookup is scoped to that user; otherwise the newest state across
+// all users is returned. A filtered email with no matching user yields
+// ErrStateNotFound.
+func (s *Service) Latest(ctx context.Context, f model.StateFilter) (model.State, string, error) {
+	f.Email = strings.TrimSpace(f.Email)
+	if f.Email != "" {
+		u, err := s.users.GetByEmailHash(ctx, s.cipher.Hash(f.Email))
+		if err != nil {
+			if errors.Is(err, cerr.ErrUserNotFound) {
+				return model.State{}, "", cerr.ErrStateNotFound
+			}
+			return model.State{}, "", err
+		}
+		f.UserID = u.ID
+	}
+
+	st, encEmail, err := s.repo.Latest(ctx, f)
 	if err != nil {
 		return model.State{}, "", err
 	}

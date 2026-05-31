@@ -301,9 +301,6 @@ func TestList_Success(t *testing.T) {
 	if page.Total != 0 {
 		t.Errorf("expected total 0, got %d", page.Total)
 	}
-	if page.Latest != nil {
-		t.Errorf("expected nil latest for unknown user, got %+v", page.Latest)
-	}
 }
 
 func TestList_ReturnsStates(t *testing.T) {
@@ -350,9 +347,6 @@ func TestList_ReturnsStates(t *testing.T) {
 	if page.Items[1].Text != "first" {
 		t.Errorf("expected second item text 'first', got %q", page.Items[1].Text)
 	}
-	if page.Latest == nil || page.Latest.Text != "second" {
-		t.Errorf("expected latest text 'second', got %+v", page.Latest)
-	}
 }
 
 func TestList_Paginates(t *testing.T) {
@@ -390,9 +384,6 @@ func TestList_Paginates(t *testing.T) {
 	if len(p1.Items) != 2 || p1.Items[0].Text != "s4" || p1.Items[1].Text != "s3" {
 		t.Errorf("unexpected page 1 items: %+v", p1.Items)
 	}
-	if p1.Latest == nil || p1.Latest.Text != "s4" {
-		t.Errorf("expected latest s4, got %+v", p1.Latest)
-	}
 
 	// Page 3, size 2 → only one item left: s0.
 	resp2, err := http.Get(srv.URL + "/state?email=" + email + "&page=3&size=2")
@@ -407,9 +398,6 @@ func TestList_Paginates(t *testing.T) {
 	}
 	if len(p3.Items) != 1 || p3.Items[0].Text != "s0" {
 		t.Errorf("unexpected page 3 items: %+v", p3.Items)
-	}
-	if p3.Latest == nil || p3.Latest.Text != "s4" {
-		t.Errorf("latest should remain s4 regardless of page, got %+v", p3.Latest)
 	}
 }
 
@@ -436,7 +424,7 @@ func TestLatest_NotFound(t *testing.T) {
 	srv, _ := newTestServer(t)
 	defer srv.Close()
 
-	resp, err := http.Get(srv.URL + "/state/latest")
+	resp, err := http.Get(srv.URL + "/state/latest?email=nobody@example.com")
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -444,6 +432,47 @@ func TestLatest_NotFound(t *testing.T) {
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", resp.StatusCode)
+	}
+}
+
+// TestLatest_NoEmailReturnsGlobalLatest verifies that omitting the email filter
+// returns the most recent state across all users.
+func TestLatest_NoEmailReturnsGlobalLatest(t *testing.T) {
+	srv, _ := newTestServer(t)
+	defer srv.Close()
+
+	exp := futureExpiry(t)
+
+	tokenA := registerAndGetToken(t, srv.URL, "alice@example.com", "mypassword123")
+	authPostJSON(t, srv.URL+"/state", tokenA,
+		fmt.Sprintf(`{"text":"alice first","expires_at":%d}`, exp))
+
+	time.Sleep(10 * time.Millisecond)
+
+	bobEmail := "bob@example.com"
+	tokenB := registerAndGetToken(t, srv.URL, bobEmail, "mypassword123")
+	authPostJSON(t, srv.URL+"/state", tokenB,
+		fmt.Sprintf(`{"text":"bob latest","expires_at":%d}`, exp))
+
+	resp, err := http.Get(srv.URL + "/state/latest")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var got model.LatestStateResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Email != bobEmail {
+		t.Errorf("expected globally newest from %q, got %q", bobEmail, got.Email)
+	}
+	if got.Text != "bob latest" {
+		t.Errorf("expected text 'bob latest', got %q", got.Text)
 	}
 }
 
@@ -460,7 +489,7 @@ func TestLatest_Success(t *testing.T) {
 	var sr model.StateResponse
 	decodeBody(t, resp1, &sr)
 
-	resp, err := http.Get(srv.URL + "/state/latest")
+	resp, err := http.Get(srv.URL + "/state/latest?email=" + email)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -491,28 +520,33 @@ func TestLatest_Success(t *testing.T) {
 	}
 }
 
-func TestLatest_ReturnsMostRecentAcrossUsers(t *testing.T) {
+// TestLatest_ScopedToQueriedUser verifies that /state/latest returns the
+// queried user's most recent state, not whichever record was written last
+// across the whole table.
+func TestLatest_ScopedToQueriedUser(t *testing.T) {
 	srv, _ := newTestServer(t)
 	defer srv.Close()
 
 	exp := futureExpiry(t)
 
-	tokenA := registerAndGetToken(t, srv.URL, "alice@example.com", "mypassword123")
-	authPostJSON(t, srv.URL+"/state", tokenA,
-		fmt.Sprintf(`{"text":"alice first","expires_at":%d}`, exp))
+	aliceEmail := "alice@example.com"
+	tokenA := registerAndGetToken(t, srv.URL, aliceEmail, "mypassword123")
+	respA := authPostJSON(t, srv.URL+"/state", tokenA,
+		fmt.Sprintf(`{"text":"alice latest","expires_at":%d}`, exp))
+	var aliceState model.StateResponse
+	decodeBody(t, respA, &aliceState)
 
 	// Ensure DATETIME timestamps differ (sqlite CURRENT_TIMESTAMP has 1s granularity,
 	// but our writes use Go time.Now which has finer resolution).
 	time.Sleep(10 * time.Millisecond)
 
-	bobEmail := "bob@example.com"
-	tokenB := registerAndGetToken(t, srv.URL, bobEmail, "mypassword123")
-	respB := authPostJSON(t, srv.URL+"/state", tokenB,
+	// Bob writes the globally most recent state.
+	tokenB := registerAndGetToken(t, srv.URL, "bob@example.com", "mypassword123")
+	authPostJSON(t, srv.URL+"/state", tokenB,
 		fmt.Sprintf(`{"text":"bob latest","expires_at":%d}`, exp))
-	var bobState model.StateResponse
-	decodeBody(t, respB, &bobState)
 
-	resp, err := http.Get(srv.URL + "/state/latest")
+	// Querying alice must still return alice's latest, not bob's.
+	resp, err := http.Get(srv.URL + "/state/latest?email=" + aliceEmail)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
@@ -526,14 +560,14 @@ func TestLatest_ReturnsMostRecentAcrossUsers(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if got.UserID != bobState.UserID {
-		t.Errorf("expected bob's user_id %q, got %q", bobState.UserID, got.UserID)
+	if got.UserID != aliceState.UserID {
+		t.Errorf("expected alice's user_id %q, got %q", aliceState.UserID, got.UserID)
 	}
-	if got.Email != bobEmail {
-		t.Errorf("expected email %q, got %q", bobEmail, got.Email)
+	if got.Email != aliceEmail {
+		t.Errorf("expected email %q, got %q", aliceEmail, got.Email)
 	}
-	if got.Text != "bob latest" {
-		t.Errorf("expected text 'bob latest', got %q", got.Text)
+	if got.Text != "alice latest" {
+		t.Errorf("expected text 'alice latest', got %q", got.Text)
 	}
 }
 
@@ -644,9 +678,6 @@ func TestE2E_FullStateFlow(t *testing.T) {
 	}
 	if page.Items[0].Text != "e2e state" {
 		t.Errorf("expected 'e2e state', got %q", page.Items[0].Text)
-	}
-	if page.Latest == nil || page.Latest.Text != "e2e state" {
-		t.Errorf("expected latest 'e2e state', got %+v", page.Latest)
 	}
 
 	if _, err := jwt.Verify(strings.TrimPrefix(token, "Bearer ")); err != nil {

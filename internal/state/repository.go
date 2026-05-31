@@ -24,15 +24,24 @@ func (r *Repository) Create(ctx context.Context, s model.State) error {
 	return err
 }
 
-func (r *Repository) GetLatest(ctx context.Context) (model.State, string, error) {
+// Latest returns the most recent state matching the filter, along with the
+// owner's (still-encrypted) email. When f.UserID is empty it considers every
+// state in the table.
+func (r *Repository) Latest(ctx context.Context, f model.StateFilter) (model.State, string, error) {
+	query := `SELECT s.id, s.user_id, s.text, s.created_at, s.expires_at, u.email
+		 FROM state s
+		 JOIN user u ON u.id = s.user_id`
+	var args []any
+	if f.UserID != "" {
+		query += ` WHERE s.user_id = ?`
+		args = append(args, f.UserID)
+	}
+	query += ` ORDER BY s.created_at DESC LIMIT 1`
+
 	var s model.State
 	var encEmail string
-	err := r.db.QueryRowContext(ctx,
-		`SELECT s.id, s.user_id, s.text, s.created_at, s.expires_at, u.email
-		 FROM state s
-		 JOIN user u ON u.id = s.user_id
-		 ORDER BY s.created_at DESC LIMIT 1`,
-	).Scan(&s.ID, &s.UserID, &s.Text, &s.CreatedAt, &s.ExpiresAt, &encEmail)
+	err := r.db.QueryRowContext(ctx, query, args...).
+		Scan(&s.ID, &s.UserID, &s.Text, &s.CreatedAt, &s.ExpiresAt, &encEmail)
 	if err == sql.ErrNoRows {
 		return model.State{}, "", cerr.ErrStateNotFound
 	}
@@ -77,25 +86,6 @@ func (r *Repository) CountByUserID(ctx context.Context, userID string) (int, err
 		userID,
 	).Scan(&n)
 	return n, err
-}
-
-func (r *Repository) GetLatestByUserID(ctx context.Context, userID string) (model.State, error) {
-	var s model.State
-	err := r.db.QueryRowContext(ctx,
-		`SELECT id, user_id, text, created_at, expires_at
-		 FROM state
-		 WHERE user_id = ?
-		 ORDER BY created_at DESC
-		 LIMIT 1`,
-		userID,
-	).Scan(&s.ID, &s.UserID, &s.Text, &s.CreatedAt, &s.ExpiresAt)
-	if err == sql.ErrNoRows {
-		return model.State{}, cerr.ErrStateNotFound
-	}
-	if err != nil {
-		return model.State{}, err
-	}
-	return s, nil
 }
 
 func (r *Repository) GetByID(ctx context.Context, id string) (model.State, error) {

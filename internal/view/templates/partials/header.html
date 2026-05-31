@@ -4,6 +4,7 @@
         <a href="/" class="text-xl font-bold tracking-tight hover:opacity-90 transition">Statesu</a>
         <nav class="flex items-center gap-3">
             {{if .UserID}}
+            <a href="/my-states" class="text-sm px-3 py-1.5 bg-white/15 hover:bg-white/25 rounded-lg transition font-medium">My States</a>
             <a href="/state/new" class="text-sm px-3 py-1.5 bg-white/15 hover:bg-white/25 rounded-lg transition font-medium">New State</a>
             <button hx-post="/logout" hx-target="body" hx-swap="outerHTML"
                 class="text-sm px-3 py-1.5 bg-white/15 hover:bg-white/25 rounded-lg transition font-medium cursor-pointer">

@@ -20,8 +20,8 @@ const (
 
 type stateService interface {
 	Create(ctx context.Context, userID, text string, expiresAt time.Time) (model.State, error)
-	List(ctx context.Context, email string, page, size int) (ListResult, error)
-	Latest(ctx context.Context) (model.State, string, error)
+	List(ctx context.Context, f model.StateFilter, page, size int) (ListResult, error)
+	Latest(ctx context.Context, f model.StateFilter) (model.State, string, error)
 	Delete(ctx context.Context, stateID, userID string) error
 }
 
@@ -78,7 +78,7 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), readTimeout)
 	defer cancel()
 
-	result, err := h.svc.List(ctx, email, page, size)
+	result, err := h.svc.List(ctx, model.StateFilter{Email: email}, page, size)
 	if err != nil {
 		if errors.Is(err, cerr.ErrInvalidInput) {
 			httputils.WriteError(w, http.StatusBadRequest, "invalid input")
@@ -93,29 +93,30 @@ func (h *Handler) List(w http.ResponseWriter, r *http.Request) {
 		items = append(items, toResponse(st))
 	}
 
-	var latest *model.StateResponse
-	if result.Latest != nil {
-		l := toResponse(*result.Latest)
-		latest = &l
-	}
-
 	httputils.WriteJSON(w, http.StatusOK, model.PaginatedStatesResponse{
-		Latest: latest,
-		Items:  items,
-		Page:   result.Page,
-		Size:   result.Size,
-		Total:  result.Total,
+		Items: items,
+		Page:  result.Page,
+		Size:  result.Size,
+		Total: result.Total,
 	})
 }
 
 func (h *Handler) Latest(w http.ResponseWriter, r *http.Request) {
+	// email is optional: when supplied the lookup is scoped to that user,
+	// otherwise the most recent state across all users is returned.
+	filter := model.StateFilter{Email: r.URL.Query().Get("email")}
+
 	ctx, cancel := context.WithTimeout(r.Context(), readTimeout)
 	defer cancel()
 
-	st, email, err := h.svc.Latest(ctx)
+	st, email, err := h.svc.Latest(ctx, filter)
 	if err != nil {
 		if errors.Is(err, cerr.ErrStateNotFound) {
 			httputils.WriteError(w, http.StatusNotFound, "state not found")
+			return
+		}
+		if errors.Is(err, cerr.ErrInvalidInput) {
+			httputils.WriteError(w, http.StatusBadRequest, "invalid input")
 			return
 		}
 		httputils.WriteError(w, http.StatusInternalServerError, "internal error")

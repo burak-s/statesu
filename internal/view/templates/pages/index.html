@@ -75,10 +75,29 @@
                      >
                   </div>
                   <p class="text-sm text-gray-500 ml-[3.25rem]">
-                     List a user's states. Supports
+                     List a user's states, newest first. Supports
                      <code class="font-mono text-gray-700">page</code> and
                      <code class="font-mono text-gray-700">size</code> query
                      params.
+                  </p>
+               </div>
+               <div
+                  class="bg-white rounded-xl shadow-sm border border-gray-100 p-4"
+               >
+                  <div class="flex items-center gap-3 mb-1">
+                     <span
+                        class="text-xs font-semibold px-2 py-0.5 rounded bg-sky-100 text-sky-700"
+                        >GET</span
+                     >
+                     <code class="text-sm font-mono text-gray-900"
+                        >/state/latest</code
+                     >
+                  </div>
+                  <p class="text-sm text-gray-500 ml-[3.25rem]">
+                     The single most recent state. Pass an optional
+                     <code class="font-mono text-gray-700">?email=&hellip;</code>
+                     to scope it to one user; omit it for the latest from
+                     anyone.
                   </p>
                </div>
                <div

@@ -10,6 +10,15 @@ type State struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// StateFilter narrows a state lookup. It flows from the handler down to the
+// repository. Email is the optional client-supplied filter; UserID is resolved
+// from it server-side and is what the repository actually queries on. An empty
+// filter matches every state.
+type StateFilter struct {
+	Email  string
+	UserID string
+}
+
 type CreateStateRequest struct {
 	Text      string `json:"text"`
 	ExpiresAt int64  `json:"expires_at"`
@@ -33,9 +42,8 @@ type LatestStateResponse struct {
 }
 
 type PaginatedStatesResponse struct {
-	Latest *StateResponse  `json:"latest"`
-	Items  []StateResponse `json:"items"`
-	Page   int             `json:"page"`
-	Size   int             `json:"size"`
-	Total  int             `json:"total"`
+	Items []StateResponse `json:"items"`
+	Page  int             `json:"page"`
+	Size  int             `json:"size"`
+	Total int             `json:"total"`
 }

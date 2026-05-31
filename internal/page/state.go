@@ -2,6 +2,7 @@ package page
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"time"
@@ -39,7 +40,7 @@ func (h *Handler) StateForm(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := r.ParseForm(); err != nil {
-		h.view.Auto(w, r, "state", "state-form", stateFormData{Error: "invalid form data"})
+		h.stateFormError(w, r, stateFormData{}, "invalid form data")
 		return
 	}
 
@@ -49,9 +50,7 @@ func (h *Handler) StateForm(w http.ResponseWriter, r *http.Request) {
 
 	ttl, err := time.ParseDuration(ttlRaw)
 	if err != nil || ttl <= 0 {
-		h.view.Auto(w, r, "state", "state-form", stateFormData{
-			Text: text, TTL: ttlRaw, Error: "invalid expiry",
-		})
+		h.stateFormError(w, r, stateFormData{Text: text, TTL: ttlRaw}, "invalid expiry")
 		return
 	}
 
@@ -60,18 +59,38 @@ func (h *Handler) StateForm(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, cerr.ErrInvalidInput) {
 			msg = "text is required and expiry must be within 30 days"
 		}
-		h.view.Auto(w, r, "state", "state-form", stateFormData{
-			Text: text, TTL: ttlRaw, Error: msg,
-		})
+		h.stateFormError(w, r, stateFormData{Text: text, TTL: ttlRaw}, msg)
 		return
 	}
 
+	// On success, send the user back to the home page with a toast flash.
+	const dest = "/?toast=State+published"
 	if isHTMX(r) {
-		w.Header().Set("HX-Trigger", "state-updated")
-		h.view.Partial(w, "state-form", defaultStateForm())
+		w.Header().Set("HX-Redirect", dest)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, dest, http.StatusSeeOther)
+}
+
+// stateFormError reports a form failure. For htmx requests it re-renders the
+// form (preserving the user's input) and fires a red toast via HX-Trigger; for
+// plain requests it falls back to an inline error on the full page.
+func (h *Handler) stateFormError(w http.ResponseWriter, r *http.Request, data stateFormData, msg string) {
+	if isHTMX(r) {
+		w.Header().Set("HX-Trigger", toastTrigger(msg, "error"))
+		h.view.Partial(w, "state-form", data)
+		return
+	}
+	data.Error = msg
+	h.view.Auto(w, r, "state", "state-form", data)
+}
+
+// toastTrigger builds the HX-Trigger header value the base layout listens for.
+func toastTrigger(message, kind string) string {
+	b, _ := json.Marshal(map[string]map[string]string{
+		"toast": {"message": message, "type": kind},
+	})
+	return string(b)
 }
 
 func (h *Handler) requireUser(w http.ResponseWriter, r *http.Request) bool {

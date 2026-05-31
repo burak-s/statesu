@@ -1,0 +1,68 @@
+{{define "title"}}My States - Statesu{{end}}
+
+{{define "content"}}
+{{template "header" .}}
+<main class="flex-1">
+    <div class="max-w-3xl mx-auto px-4 py-10">
+        <div class="flex items-center justify-between mb-6">
+            <h1 class="text-xl font-semibold text-gray-900">My States</h1>
+            <a href="/state/new"
+                class="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium rounded-lg transition shadow-sm">
+                New State
+            </a>
+        </div>
+
+        {{if .Items}}
+        <div class="space-y-3" id="states-list">
+            {{range .Items}}
+            <div data-state-id="{{.ID}}"
+                class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex items-start gap-4 group">
+                <div class="flex-1 min-w-0">
+                    <p class="text-sm text-gray-900 whitespace-pre-wrap break-words">{{.Text}}</p>
+                    <div class="flex items-center gap-3 mt-2">
+                        <span class="text-xs text-gray-400">{{.CreatedAt}}</span>
+                        <span class="text-xs {{if .Expired}}text-red-400{{else}}text-gray-400{{end}}">{{.ExpiresAt}}</span>
+                    </div>
+                </div>
+                <button
+                    hx-delete="/my-states/{{.ID}}"
+                    hx-target="closest [data-state-id]"
+                    hx-swap="outerHTML"
+                    hx-confirm="Delete this state?"
+                    class="shrink-0 text-xs text-gray-400 hover:text-red-500 transition px-2 py-1 rounded hover:bg-red-50 cursor-pointer opacity-0 group-hover:opacity-100">
+                    Delete
+                </button>
+            </div>
+            {{end}}
+        </div>
+
+        {{if or .HasPrev .HasNext}}
+        <div class="flex justify-center gap-2 mt-8">
+            {{if .HasPrev}}
+            <a href="/my-states?page={{.PrevPage}}"
+                class="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition">
+                Previous
+            </a>
+            {{end}}
+            <span class="px-4 py-2 text-sm text-gray-500">Page {{.Page}}</span>
+            {{if .HasNext}}
+            <a href="/my-states?page={{.NextPage}}"
+                class="px-4 py-2 text-sm border border-gray-200 rounded-lg hover:bg-gray-50 transition">
+                Next
+            </a>
+            {{end}}
+        </div>
+        {{end}}
+
+        {{else}}
+        <div class="text-center py-16 text-gray-400">
+            <p class="text-base mb-4">You haven't posted any states yet.</p>
+            <a href="/state/new"
+                class="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white text-sm font-medium rounded-lg transition">
+                Post your first state
+            </a>
+        </div>
+        {{end}}
+    </div>
+</main>
+{{end}}

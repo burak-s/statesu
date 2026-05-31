@@ -9,6 +9,7 @@ import (
 
 	"statesu.com/internal/middleware"
 	"statesu.com/internal/model"
+	"statesu.com/internal/state"
 	"statesu.com/internal/view"
 )
 
@@ -24,7 +25,9 @@ type AuthService interface {
 
 type StateService interface {
 	Create(ctx context.Context, userID, text string, expiresAt time.Time) (model.State, error)
-	Latest(ctx context.Context) (model.State, string, error)
+	Latest(ctx context.Context, f model.StateFilter) (model.State, string, error)
+	List(ctx context.Context, f model.StateFilter, page, size int) (state.ListResult, error)
+	Delete(ctx context.Context, stateID, userID string) error
 }
 
 type Handler struct {
@@ -39,6 +42,8 @@ func NewHandler(tokens Tokens, auth AuthService, state StateService, view *view.
 }
 
 func (h *Handler) Mount(mux *http.ServeMux) {
+	auth := middleware.RequireAuth(h.tokens)
+
 	mux.HandleFunc("GET /", middleware.OptionalAuth(h.tokens, h.Index))
 	mux.HandleFunc("GET /latest-feed", h.LatestFeed)
 	mux.HandleFunc("POST /logout", h.Logout)
@@ -50,6 +55,9 @@ func (h *Handler) Mount(mux *http.ServeMux) {
 
 	mux.HandleFunc("GET /state/new", middleware.OptionalAuth(h.tokens, h.StatePage))
 	mux.HandleFunc("POST /state/new", middleware.OptionalAuth(h.tokens, h.StateForm))
+
+	mux.HandleFunc("GET /my-states", auth(h.MyStates))
+	mux.HandleFunc("DELETE /my-states/{stateID}", auth(h.DeleteState))
 }
 
 type latestStateData struct {
@@ -81,7 +89,7 @@ func (h *Handler) LatestFeed(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) fetchLatest() latestStateData {
-	st, email, err := h.state.Latest(context.Background())
+	st, email, err := h.state.Latest(context.Background(), model.StateFilter{})
 	if err != nil {
 		return latestStateData{}
 	}

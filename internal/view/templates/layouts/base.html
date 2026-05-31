@@ -12,6 +12,47 @@
 </head>
 <body class="bg-gray-50 min-h-screen flex flex-col font-sans antialiased">
     {{block "content" .}}{{end}}
+
+    <!-- Toast: shown when the URL carries a ?toast=<message> query param.
+         An optional ?toast_type=error renders it red; otherwise green. -->
+    <div id="toast-root" class="fixed bottom-4 right-4 z-50 flex flex-col gap-2"></div>
+    <script>
+        (function () {
+            function showToast(message, type) {
+                var root = document.getElementById("toast-root");
+                if (!root) return;
+                var color = type === "error" ? "bg-red-600" : "bg-emerald-600";
+                var el = document.createElement("div");
+                el.className = "flex items-center gap-2 " + color + " text-white text-sm font-medium px-4 py-3 rounded-lg shadow-lg transition-all duration-300 opacity-0 translate-y-2";
+                el.textContent = message;
+                root.appendChild(el);
+                requestAnimationFrame(function () {
+                    el.classList.remove("opacity-0", "translate-y-2");
+                });
+                setTimeout(function () {
+                    el.classList.add("opacity-0", "translate-y-2");
+                    setTimeout(function () { el.remove(); }, 300);
+                }, 3000);
+            }
+            document.addEventListener("DOMContentLoaded", function () {
+                var params = new URLSearchParams(window.location.search);
+                var message = params.get("toast");
+                if (!message) return;
+                showToast(message, params.get("toast_type"));
+                params.delete("toast");
+                params.delete("toast_type");
+                var qs = params.toString();
+                window.history.replaceState({}, "", window.location.pathname + (qs ? "?" + qs : ""));
+            });
+
+            // Toasts triggered mid-page by htmx via an HX-Trigger response header,
+            // e.g. {"toast":{"message":"...","type":"error"}}.
+            document.body.addEventListener("toast", function (e) {
+                var d = e.detail || {};
+                if (d.message) showToast(d.message, d.type);
+            });
+        })();
+    </script>
 </body>
 </html>
 {{end}}
