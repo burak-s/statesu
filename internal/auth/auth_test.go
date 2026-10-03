@@ -91,6 +91,17 @@ func decodeBody(t *testing.T, resp *http.Response, v any) {
 	}
 }
 
+func authCookie(t *testing.T, resp *http.Response) *http.Cookie {
+	t.Helper()
+	for _, c := range resp.Cookies() {
+		if c.Name == "token" {
+			return c
+		}
+	}
+	t.Fatal("expected token cookie to be set")
+	return nil
+}
+
 // ---------------------------------------------------------------------------
 // Register – success
 // ---------------------------------------------------------------------------
@@ -480,5 +491,129 @@ func TestE2E_FullAuthFlow(t *testing.T) {
 	}
 	if reg.Email != "e2e@example.com" || login.Email != "e2e@example.com" {
 		t.Errorf("unexpected emails: register=%q login=%q", reg.Email, login.Email)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// SPA session: cookie auth, /auth/me and /auth/logout
+// ---------------------------------------------------------------------------
+
+func TestRegister_SetsHttpOnlyCookie(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := postJSON(t, srv.URL+"/auth/register",
+		`{"email":"cookie@example.com","password":"mypassword123"}`)
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+
+	cookie := authCookie(t, resp)
+	resp.Body.Close()
+
+	if cookie.Value == "" {
+		t.Error("expected a non-empty token cookie")
+	}
+	if !cookie.HttpOnly {
+		t.Error("expected the token cookie to be HttpOnly")
+	}
+}
+
+func TestMe_WithCookie(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := postJSON(t, srv.URL+"/auth/register",
+		`{"email":"me@example.com","password":"mypassword123"}`)
+	var registered model.AuthResponse
+	decodeBody(t, resp, &registered)
+	cookie := authCookie(t, resp)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/auth/me", nil)
+	req.AddCookie(cookie)
+	meResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get /auth/me: %v", err)
+	}
+
+	if meResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", meResp.StatusCode)
+	}
+
+	var me struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	decodeBody(t, meResp, &me)
+	if me.ID != registered.ID {
+		t.Errorf("expected id %q, got %q", registered.ID, me.ID)
+	}
+	if me.Email != "me@example.com" {
+		t.Errorf("expected email me@example.com, got %q", me.Email)
+	}
+}
+
+func TestMe_WithBearerToken(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := postJSON(t, srv.URL+"/auth/register",
+		`{"email":"bearer@example.com","password":"mypassword123"}`)
+	var registered model.AuthResponse
+	decodeBody(t, resp, &registered)
+
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/auth/me", nil)
+	req.Header.Set("Authorization", "Bearer "+registered.Token)
+	meResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("get /auth/me: %v", err)
+	}
+	defer meResp.Body.Close()
+
+	if meResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", meResp.StatusCode)
+	}
+}
+
+func TestMe_Unauthenticated(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL + "/auth/me")
+	if err != nil {
+		t.Fatalf("get /auth/me: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("expected 401, got %d", resp.StatusCode)
+	}
+}
+
+func TestLogout_ClearsCookie(t *testing.T) {
+	srv := newTestServer(t)
+	defer srv.Close()
+
+	resp := postJSON(t, srv.URL+"/auth/register",
+		`{"email":"logout@example.com","password":"mypassword123"}`)
+	cookie := authCookie(t, resp)
+	resp.Body.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/auth/logout", nil)
+	req.AddCookie(cookie)
+	logoutResp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post /auth/logout: %v", err)
+	}
+	defer logoutResp.Body.Close()
+
+	if logoutResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", logoutResp.StatusCode)
+	}
+	if cleared := authCookie(t, logoutResp); cleared.Value != "" {
+		t.Errorf("expected cleared cookie, got value %q", cleared.Value)
+	}
+	if raw := logoutResp.Header.Get("Set-Cookie"); !strings.Contains(raw, "Max-Age=0") {
+		t.Errorf("expected Max-Age=0 in Set-Cookie, got %q", raw)
 	}
 }

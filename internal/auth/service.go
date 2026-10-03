@@ -15,6 +15,7 @@ import (
 
 type userRepository interface {
 	Create(ctx context.Context, u model.User) error
+	GetByID(ctx context.Context, id string) (model.User, error)
 	GetByEmailHash(ctx context.Context, hash string) (model.User, error)
 }
 
@@ -68,6 +69,23 @@ func (s *Service) Register(ctx context.Context, email, password string) (model.U
 	}
 
 	u.Email = email
+	return u, nil
+}
+
+// Me resolves the currently authenticated user and decrypts their email.
+func (s *Service) Me(ctx context.Context, userID string) (model.User, error) {
+	if userID == "" {
+		return model.User{}, cerr.ErrUserNotFound
+	}
+	u, err := s.repo.GetByID(ctx, userID)
+	if err != nil {
+		return model.User{}, err
+	}
+	plain, err := s.cipher.Decrypt(u.Email)
+	if err != nil {
+		return model.User{}, err
+	}
+	u.Email = plain
 	return u, nil
 }
 
