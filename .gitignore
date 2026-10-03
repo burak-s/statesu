@@ -1,10 +1,16 @@
 # Build output
 /bin/
 
-# Generated CSS (built by `make css` / Tailwind stage in Dockerfile)
-/internal/view/static/app.css
+# Embedded SPA build (produced by `make web` from web/build/)
+/internal/spa/dist/*
+!/internal/spa/dist/.gitkeep
 
-# Node (only if you ever switch to npm-based Tailwind)
+# Frontend
+/web/node_modules/
+/web/build/
+/web/.svelte-kit/
+
+# Node (only if you ever switch to npm-based Tooling)
 node_modules/
 *.exe
 *.exe~

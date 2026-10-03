@@ -29,11 +29,23 @@ jobs:
               go-version-file: go.mod
               cache: false
 
+         - name: Set up Node
+           uses: actions/setup-node@v4
+           with:
+              node-version: 24
+              cache: npm
+              cache-dependency-path: web/package-lock.json
+
+         - name: Build frontend
+           run: |
+              cd web
+              npm ci
+              npm run build
+              mkdir -p ../internal/spa/dist
+              cp -r build/. ../internal/spa/dist/
+
          - name: Verify dependencies
            run: go mod verify
-
-         - name: Build CSS
-           run: make css
 
          - name: Vet
            run: go vet ./...

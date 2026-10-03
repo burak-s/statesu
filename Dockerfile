@@ -1,30 +1,14 @@
-FROM alpine:3.23 AS tailwind
+FROM node:24-alpine AS web
 
-ARG TAILWIND_VERSION=v3.4.17
-ARG TARGETARCH=amd64
+WORKDIR /src/web
 
-RUN apk add --no-cache curl ca-certificates \
- && case "$TARGETARCH" in \
-        amd64)  TW_ARCH=x64 ;; \
-        arm64)  TW_ARCH=arm64 ;; \
-        *)      echo "unsupported arch: $TARGETARCH" && exit 1 ;; \
-    esac \
- && curl -sSL -o /usr/local/bin/tailwindcss \
-      "https://github.com/tailwindlabs/tailwindcss/releases/download/${TAILWIND_VERSION}/tailwindcss-linux-${TW_ARCH}" \
- && chmod +x /usr/local/bin/tailwindcss
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
 
-WORKDIR /src
-COPY tailwind.config.js ./
-COPY assets ./assets
-COPY internal/view/templates ./internal/view/templates
+COPY web/ ./
+RUN npm run build
 
-RUN mkdir -p internal/view/static \
- && tailwindcss \
-      -i assets/css/app.css \
-      -o internal/view/static/app.css \
-      --minify
-
-FROM golang:1.26.3-alpine3.23 AS builder
+FROM golang:1.27-alpine AS builder
 
 WORKDIR /src
 
@@ -32,7 +16,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-COPY --from=tailwind /src/internal/view/static/app.css ./internal/view/static/app.css
+COPY --from=web /src/web/build ./internal/spa/dist
 
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \

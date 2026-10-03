@@ -11,3 +11,9 @@ Dockerfile
 Makefile
 README*
 **/*_test.go
+
+# Frontend: dependencies and build output are produced inside the image
+web/node_modules
+web/build
+web/.svelte-kit
+internal/spa/dist

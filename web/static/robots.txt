@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# API responses are not documentation pages.
+Disallow: /auth/
+Disallow: /state
+
+Sitemap: https://statesu.com/sitemap.xml

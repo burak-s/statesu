@@ -10,9 +10,8 @@ import (
 	"statesu.com/internal/config"
 	"statesu.com/internal/crypto"
 	"statesu.com/internal/middleware"
-	"statesu.com/internal/page"
+	"statesu.com/internal/spa"
 	"statesu.com/internal/state"
-	"statesu.com/internal/view"
 )
 
 func main() {
@@ -39,11 +38,6 @@ func main() {
 		log.Fatalf("jwt issuer: %v", err)
 	}
 
-	renderer, err := view.New()
-	if err != nil {
-		log.Fatalf("view renderer: %v", err)
-	}
-
 	authRepo := auth.NewRepository(db)
 	authSvc := auth.NewService(authRepo, emailCipher)
 	authHandler := auth.NewHandler(authSvc, jwtIssuer)
@@ -52,13 +46,10 @@ func main() {
 	stateSvc := state.NewService(stateRepo, authRepo, emailCipher)
 	stateHandler := state.NewHandler(stateSvc, jwtIssuer)
 
-	pageHandler := page.NewHandler(jwtIssuer, authSvc, stateSvc, renderer)
-
 	mux := http.NewServeMux()
-	renderer.MountStatic(mux)
 	authHandler.Mount(mux)
 	stateHandler.Mount(mux)
-	pageHandler.Mount(mux)
+	spa.Mount(mux)
 
 	log.Printf("listening on %s", cfg.Addr)
 	if err := http.ListenAndServe(cfg.Addr, middleware.CORS(mux)); err != nil {
