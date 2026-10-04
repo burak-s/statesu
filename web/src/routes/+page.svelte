@@ -71,6 +71,12 @@ curl --fail-with-body -sS "$API/state/latest" | jq .`,
   "created_at": 1760000000,
   "expires_at": 1760086400
 }`,
+		display: `const response = await fetch(
+  'https://statesu.com/state/latest?email=' + encodeURIComponent(email)
+);
+if (!response.ok) throw new Error('Could not fetch status');
+const state = await response.json();
+document.querySelector('#status').textContent = state.text;`,
 		error: `{"error":"token expired"}`
 	};
 	const wgetAuth = (path) => `# Bash: prompt without saving your password in shell history.
@@ -139,6 +145,7 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 		<a href="#quickstart">Quick start</a>
 		<a href="#manage">Manage states</a>
 		<a href="#reference">API reference</a>
+		<a href="https://github.com/burak-s/statesu" target="_blank" rel="noopener noreferrer">GitHub</a>
 	</nav>
 </header>
 
@@ -164,13 +171,16 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 		<h3>02 / Publish a state</h3>
 		<p>Send your status text and an expiration timestamp. This example sets the expiration to one day from now and saves the state ID for deletion later. Expiration does not automatically hide or delete the state.</p>
 		<Terminal variants={{ curl: examples.post, wget: wgetExamples.post }} />
-		<p>Text is trimmed, must not be empty, and has a 4096-byte limit. <code>expires_at</code> is required: Unix seconds, in the future, at most 30 days away. It is not a duration or a millisecond timestamp.</p>
+		<p>Text is trimmed, must not be empty, and has a 4096-byte limit. The entire <code>POST /state</code> JSON body must be at most 32 KiB (32,768 bytes), including whitespace and JSON escapes. <code>expires_at</code> is required: Unix seconds, in the future, at most 30 days away. It is not a duration or a millisecond timestamp.</p>
 
 		<h3>03 / Display it anywhere</h3>
 		<p>Fetch your latest state by email and use the <code>text</code> field wherever you want to show your status. Your client controls the display and when to fetch updates. Reading is public and needs no token. Always URL-encode email query parameters, especially addresses containing <code>+</code>.</p>
 		<Terminal variants={{ curl: examples.latest, wget: wgetExamples.latest }} />
 		<p>The latest-state endpoint returns JSON like this. The IDs and timestamps below are examples.</p>
 		<Terminal code={examples.response} language="json" />
+		<h3 id="safe-rendering">Security / Safe status rendering</h3>
+		<p><strong>Render as plain text:</strong> status text is untrusted user input, not sanitized HTML. Tags and scripts are preserved as literal text. In browsers, assign it to <code>textContent</code>, as below; in Svelte, use normal text interpolation. Never pass it to <code>innerHTML</code>, raw HTML rendering, or a Markdown renderer that allows raw HTML. JSON escaping does not make decoded text safe to render as HTML.</p>
+		<Terminal code={examples.display} language="javascript" />
 		<p><strong>Public by design:</strong> anyone can read states, and the latest-state response includes the owner's email. Don't post secrets. Expiration is metadata: the current read endpoints still return expired states. Check <code>expires_at</code> in your client if you only want active states.</p>
 	</section>
 
@@ -190,7 +200,7 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 
 	<section id="reference">
 		<h2>API reference</h2>
-		<p>Base URL: <code>https://statesu.com</code>. Request and response bodies are JSON. Send <code>Content-Type: application/json</code> for JSON bodies and <code>Authorization: Bearer $TOKEN</code> for authenticated requests.</p>
+		<p>Base URL: <code>https://statesu.com</code>. Request and response bodies are JSON. Status <code>text</code> is untrusted plain text; see <a href="#safe-rendering">safe status rendering</a> before displaying it. Send <code>Content-Type: application/json</code> for JSON bodies and <code>Authorization: Bearer $TOKEN</code> for authenticated requests.</p>
 		<div class="table-scroll">
 			<table>
 				<thead><tr><th>Method / endpoint</th><th>Auth</th><th>Behavior</th></tr></thead>
@@ -208,10 +218,14 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 			<li><strong>401</strong> — incorrect login credentials, or a missing, invalid or expired token.</li>
 			<li><strong>404</strong> — no latest state, or the state to delete doesn't exist / isn't yours.</li>
 			<li><strong>409</strong> — an account with that email already exists; log in instead.</li>
+			<li><strong>413</strong> — the <code>POST /state</code> request body exceeds 32 KiB.</li>
 			<li><strong>500</strong> — server error; retry later.</li>
 		</ul>
 		<p><code>curl --fail-with-body</code> preserves the error body and exits nonzero on HTTP errors. Use curl's <code>-i</code> or wget's <code>--server-response</code> to inspect HTTP status and headers. wget also exits nonzero on HTTP errors. Clear your shell token when finished: <code>unset TOKEN</code>.</p>
 	</section>
 </main>
 
-<footer>Statesu — dynamic user status API. <a href="#quickstart">Back to quick start ↑</a></footer>
+<footer>
+	<span>Statesu — dynamic user status API. <a href="https://github.com/burak-s/statesu" target="_blank" rel="noopener noreferrer">GitHub</a></span>
+	<a href="#quickstart">Back to quick start ↑</a>
+</footer>

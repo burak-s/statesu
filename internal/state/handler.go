@@ -16,6 +16,8 @@ import (
 const (
 	readTimeout  = 10 * time.Second
 	writeTimeout = 5 * time.Second
+	// Allow a full 4096-byte status even when every character is JSON-escaped.
+	maxCreateBodyBytes = 32 * 1024
 )
 
 type stateService interface {
@@ -41,8 +43,14 @@ func NewHandler(svc stateService, tokens tokenVerifier) *Handler {
 func (h *Handler) Create(w http.ResponseWriter, r *http.Request) {
 	userID := middleware.UserIDFromContext(r.Context())
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxCreateBodyBytes)
 	var req model.CreateStateRequest
 	if err := httputils.DecodeJSON(r, &req); err != nil {
+		var sizeErr *http.MaxBytesError
+		if errors.As(err, &sizeErr) {
+			httputils.WriteError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
 		httputils.WriteError(w, http.StatusBadRequest, "invalid body")
 		return
 	}

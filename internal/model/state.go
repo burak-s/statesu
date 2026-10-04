@@ -20,22 +20,26 @@ type StateFilter struct {
 }
 
 type CreateStateRequest struct {
+	// Text is untrusted plain text, not HTML. Markup is preserved, not sanitized.
 	Text      string `json:"text"`
 	ExpiresAt int64  `json:"expires_at"`
 }
 
 type StateResponse struct {
-	ID        string `json:"state_id"`
-	UserID    string `json:"user_id"`
+	ID     string `json:"state_id"`
+	UserID string `json:"user_id"`
+	// Text must be rendered as text (e.g. textContent), never as raw HTML.
+	// JSON escaping does not make the decoded value safe for HTML insertion.
 	Text      string `json:"text"`
 	CreatedAt int64  `json:"created_at"`
 	ExpiresAt int64  `json:"expires_at"`
 }
 
 type LatestStateResponse struct {
-	ID        string `json:"state_id"`
-	UserID    string `json:"user_id"`
-	Email     string `json:"email"`
+	ID     string `json:"state_id"`
+	UserID string `json:"user_id"`
+	Email  string `json:"email"`
+	// Text has the same untrusted plain-text contract as StateResponse.Text.
 	Text      string `json:"text"`
 	CreatedAt int64  `json:"created_at"`
 	ExpiresAt int64  `json:"expires_at"`

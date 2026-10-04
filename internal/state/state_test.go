@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -246,6 +247,98 @@ func TestCreate_InvalidInput(t *testing.T) {
 			}
 			resp.Body.Close()
 		})
+	}
+}
+
+func TestCreate_BodyLimit(t *testing.T) {
+	srv, _ := newTestServer(t)
+	defer srv.Close()
+	token := registerAndGetToken(t, srv.URL, "bodylimit@example.com", "mypassword123")
+	valid := fmt.Sprintf(`{"text":"hello","expires_at":%d}`, futureExpiry(t))
+
+	for _, tt := range []struct {
+		name string
+		body string
+		want int
+	}{
+		{"oversized text", fmt.Sprintf(`{"text":"%s","expires_at":%d}`, strings.Repeat("x", 32*1024), futureExpiry(t)), http.StatusRequestEntityTooLarge},
+		{"oversized trailing whitespace", valid + strings.Repeat(" ", 32*1024), http.StatusRequestEntityTooLarge},
+		{"second JSON value", valid + `{}`, http.StatusBadRequest},
+		{"trailing garbage", valid + `garbage`, http.StatusBadRequest},
+		{"escaped text at limit", fmt.Sprintf(`{"text":"%s","expires_at":%d}`, strings.Repeat(`\u0061`, 4096), futureExpiry(t)), http.StatusCreated},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			// Unknown Content-Length exercises the streaming limit too.
+			req, err := http.NewRequest(http.MethodPost, srv.URL+"/state", io.NopCloser(strings.NewReader(tt.body)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.Header.Set("Authorization", token)
+			req.Header.Set("Content-Type", "application/json")
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != tt.want {
+				t.Errorf("expected %d, got %d", tt.want, resp.StatusCode)
+			}
+		})
+	}
+}
+
+func TestCreate_PlainTextRoundTrip(t *testing.T) {
+	srv, _ := newTestServer(t)
+	defer srv.Close()
+	email := "plaintext@example.com"
+	token := registerAndGetToken(t, srv.URL, email, "mypassword123")
+	text := `<script>alert(1)</script><img src=x onerror=alert(1)> & "quotes"`
+	body, err := json.Marshal(model.CreateStateRequest{Text: text, ExpiresAt: futureExpiry(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := authPostJSON(t, srv.URL+"/state", token, string(body))
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	var created model.StateResponse
+	decodeBody(t, resp, &created)
+	if created.Text != text {
+		t.Errorf("plain text changed: %q", created.Text)
+	}
+
+	for _, path := range []string{"/state?email=" + email, "/state/latest?email=" + email} {
+		resp, err := http.Get(srv.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/json" {
+			t.Fatalf("unexpected response: %d, %s", resp.StatusCode, resp.Header.Get("Content-Type"))
+		}
+		if strings.Contains(string(raw), "<") || strings.Contains(string(raw), ">") || strings.Contains(string(raw), "&") {
+			t.Errorf("HTML-sensitive characters not escaped in JSON: %s", raw)
+		}
+		var got model.StateResponse
+		if strings.HasPrefix(path, "/state?") {
+			var page model.PaginatedStatesResponse
+			if err := json.Unmarshal(raw, &page); err != nil {
+				t.Fatal(err)
+			}
+			if len(page.Items) != 1 {
+				t.Fatalf("expected one state, got %d", len(page.Items))
+			}
+			got = page.Items[0]
+		} else if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Text != text {
+			t.Errorf("plain text changed: %q", got.Text)
+		}
 	}
 }
 
