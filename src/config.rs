@@ -7,8 +7,9 @@ pub const ADDR_ENV: &str = "STATESU_ADDR";
 pub const DB_ENV: &str = "STATESU_DB";
 pub const EMAIL_KEY_ENV: &str = "STATESU_EMAIL_KEY";
 pub const EMAIL_HMAC_KEY_ENV: &str = "STATESU_EMAIL_HMAC_KEY";
-pub const JWT_SECRET_ENV: &str = "STATESU_JWT_SECRET";
-pub const JWT_AUDIENCE_ENV: &str = "STATESU_JWT_AUDIENCE";
+pub const RESEND_API_KEY_ENV: &str = "STATESU_RESEND";
+pub const MAIL_FROM_ENV: &str = "STATESU_MAIL_FROM";
+pub const PUBLIC_URL_ENV: &str = "STATESU_PUBLIC_URL";
 pub const ALLOWED_ORIGINS_ENV: &str = "STATESU_ALLOWED_ORIGINS";
 pub const TRUSTED_PROXIES_ENV: &str = "STATESU_TRUSTED_PROXIES";
 pub const RATE_LIMIT_RPM_ENV: &str = "STATESU_RATE_LIMIT_RPM";
@@ -19,7 +20,6 @@ pub const LOG_JSON_ENV: &str = "STATESU_LOG_JSON";
 
 const DEFAULT_ADDR: &str = ":8080";
 const DEFAULT_DB: &str = "db/statesu.db";
-const DEFAULT_AUDIENCE: &str = "statesu-api";
 const DEFAULT_RATE_LIMIT_RPM: u64 = 120;
 const DEFAULT_AUTH_RATE_LIMIT_RPM: u64 = 10;
 const DEFAULT_MAX_CONCURRENCY: usize = 128;
@@ -33,8 +33,13 @@ pub struct Config {
     /// AES-256-GCM key for email encryption; exactly 32 bytes.
     pub email_key: [u8; 32],
     pub email_hmac_key: Vec<u8>,
-    pub jwt_secret: Vec<u8>,
-    pub jwt_audience: String,
+    /// Resend API key for verification mail; server-only secret.
+    pub resend_api_key: String,
+    /// `From` header value for verification mail, e.g. `Statesu <no-reply@…>`.
+    pub mail_from: String,
+    /// Public origin the dashboard is served from; verification links and the
+    /// same-site Origin check for cookie-authenticated writes use it.
+    pub public_url: PublicUrl,
     pub allowed_origins: Vec<String>,
     pub trusted_proxies: Vec<IpNet>,
     pub rate_limit_rpm: u64,
@@ -42,6 +47,53 @@ pub struct Config {
     pub max_concurrency: usize,
     pub argon2_concurrency: usize,
     pub log_json: bool,
+}
+
+/// The public `scheme://host[:port]` origin parsed from `PUBLIC_URL_ENV`.
+/// Only the origin is kept: paths, credentials and fragments are rejected so
+/// verification links and Origin comparisons cannot be polluted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PublicUrl {
+    /// Scheme plus lowercase authority, e.g. `https://security.statesu.com`.
+    pub origin: String,
+}
+
+impl PublicUrl {
+    pub fn parse(input: &str) -> Result<PublicUrl, Error> {
+        let (scheme, rest) = input
+            .split_once("://")
+            .ok_or_else(|| public_url_error(input))?;
+        if !matches!(scheme, "http" | "https") || rest.is_empty() {
+            return Err(public_url_error(input));
+        }
+        // One path/authority segment only: no path, userinfo or fragment.
+        if rest
+            .split(['/', '?', '#', '@'])
+            .next()
+            .is_some_and(|authority| authority != rest)
+        {
+            return Err(public_url_error(input));
+        }
+        Ok(PublicUrl {
+            origin: format!("{scheme}://{rest}").to_lowercase(),
+        })
+    }
+
+    /// True when an `Origin` header value denotes this origin.
+    pub fn matches_origin(&self, origin: &str) -> bool {
+        origin.eq_ignore_ascii_case(&self.origin)
+    }
+
+    /// Builds an absolute link under this origin.
+    pub fn link(&self, path: &str) -> String {
+        format!("{}{}", self.origin, path)
+    }
+}
+
+fn public_url_error(input: &str) -> Error {
+    Error::Config(format!(
+        "{PUBLIC_URL_ENV} must be a bare http(s) origin, got: {input}"
+    ))
 }
 
 /// Decoded CIDR network: an integer IP representation plus mask bit count.
@@ -117,9 +169,9 @@ impl Config {
         let email_key = decode_exact_32(&env_required(EMAIL_KEY_ENV)?)?;
         let email_hmac_key =
             decode_at_least_32(&env_required(EMAIL_HMAC_KEY_ENV)?, EMAIL_HMAC_KEY_ENV)?;
-        let jwt_secret = decode_at_least_32(&env_required(JWT_SECRET_ENV)?, JWT_SECRET_ENV)?;
-        let jwt_audience =
-            env_no_empty(JWT_AUDIENCE_ENV)?.unwrap_or_else(|| DEFAULT_AUDIENCE.to_owned());
+        let resend_api_key = env_required(RESEND_API_KEY_ENV)?;
+        let mail_from = env_required(MAIL_FROM_ENV)?;
+        let public_url = PublicUrl::parse(&env_required(PUBLIC_URL_ENV)?)?;
         let allowed_origins = match env_no_empty(ALLOWED_ORIGINS_ENV)? {
             Some(v) => v
                 .split(',')
@@ -180,8 +232,9 @@ impl Config {
             db_path,
             email_key,
             email_hmac_key,
-            jwt_secret,
-            jwt_audience,
+            resend_api_key,
+            mail_from,
+            public_url,
             allowed_origins,
             trusted_proxies,
             rate_limit_rpm,

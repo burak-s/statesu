@@ -120,7 +120,9 @@ async fn restricted_cors_requires_an_exact_allowlisted_origin() {
         "https://evil.example",
     );
     let response = app.send(denied).await;
-    assert_eq!(response.status, StatusCode::UNAUTHORIZED);
+    // Same-site write pinning: cross-site browser writes are refused without
+    // ever touching credentials.
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
     assert!(response.header("access-control-allow-origin").is_none());
 }
 
@@ -163,7 +165,7 @@ async fn cors_preflight_is_classified_by_requested_method() {
     );
     assert_eq!(
         response.header("access-control-allow-headers"),
-        Some("Authorization, Content-Type")
+        Some("Authorization, Content-Type, X-CSRF-Token")
     );
     assert_eq!(response.header("access-control-max-age"), Some("600"));
 }

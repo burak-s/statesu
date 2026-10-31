@@ -1,22 +1,31 @@
 <script>
-	import {
-		isEmail,
-		loadToken,
-		request,
-		storeToken
-	} from '#lib/api.js';
+	import { isEmail, request } from '#lib/api.js';
 
 	// Session ----------------------------------------------------------------
-	let token = $state(null);
+	/** @type {{ id: string, email: string } | null} */
 	let me = $state(null);
 	let authMode = $state('login');
 	let authEmail = $state('');
 	let authPassword = $state('');
 	let authError = $state('');
 	let authBusy = $state(false);
+	let notice = $state(''); // register → "check your inbox" state
+	let canResend = $state(false);
+
+	// Personal access tokens -------------------------------------------------
+	/** @type {{ id: string, name: string, scopes: string, created_at: number, expires_at: number, last_used_at: number|null, delete_warned?: boolean }[]} */
+	let pats = $state([]);
+	let patName = $state('');
+	let patWrite = $state(false);
+	let patError = $state('');
+	/** @type {null | { id: string, name: string, scopes: string, created_at: number, expires_at: number, secret: string }} */
+	let freshPat = $state(null); // secret shown exactly once
+	let patBusy = $state(false);
 
 	// Blogs ------------------------------------------------------------------
+	/** @type {any[]} */
 	let blogs = $state([]);
+	/** @type {string | null} */
 	let selectedBlogId = $state(null);
 	let newBlogName = $state('');
 	let newBlogSlug = $state('');
@@ -29,33 +38,53 @@
 	let settingsSaved = $state(false);
 
 	// Posts ------------------------------------------------------------------
+	/** @type {{ id: string, slug: string, title: string, content_markdown: string, status: string, published_at: number|null, deleted_warned?: boolean }[]} */
 	let posts = $state([]);
 	let postsError = $state('');
-	let editor = $state(null); // null | {id?,blogId,slug,title,content,status,published_at}
+	/** @type {{ id: null|string, slug: string, title: string, content_markdown: string, status: string, published_at?: number|null } | null} */
+	let editor = $state(null);
 	let editorError = $state('');
 	let busy = $state(false);
 
 	const selectedBlog = $derived(blogs.find((b) => b.id === selectedBlogId) ?? null);
 
 	$effect(() => {
-		const saved = loadToken();
-		if (saved) initialize(saved);
+		if (typeof localStorage !== 'undefined' && localStorage.getItem('statesu_token')) {
+			localStorage.removeItem('statesu_token'); // migrated away; one cleanup pass
+		}
+		checkSession();
 	});
 
-	async function initialize(savedToken) {
-		const check = await request('/auth/me', { token: savedToken });
-		if (!check.ok) {
-			storeToken(null);
-			return;
+	async function checkSession() {
+		const result = await request('/auth/me');
+		if (result.ok) {
+			me = result.data;
+			await refreshPats();
+			await refreshBlogs();
+		} else {
+			me = null;
 		}
-		token = savedToken;
-		me = check.data;
-		await refreshBlogs();
 	}
 
+	/** @param {{ unauthorized?: boolean }|undefined|null} result @returns {boolean} */
+	function signedOut(result) {
+		if (result?.unauthorized) {
+			me = null;
+			pats = [];
+			blogs = [];
+			selectedBlogId = null;
+			posts = [];
+			editor = null;
+			return true;
+		}
+		return false;
+	}
+
+	/** @param {SubmitEvent} event */
 	async function submitAuth(event) {
 		event.preventDefault();
 		authError = '';
+		notice = '';
 		if (!isEmail(authEmail) || authPassword.length < 8) {
 			authError = 'Enter a valid email and a password of at least 8 characters.';
 			return;
@@ -67,28 +96,113 @@
 		});
 		authBusy = false;
 		if (!result.ok) {
+			if (signedOut(result)) return;
 			authError = result.error;
 			return;
 		}
-		token = result.data.token;
-		storeToken(token);
+		if (authMode === 'register') {
+			// No credential comes back: the address must be confirmed first.
+			notice = 'Check your inbox — a verification link valid for 30 minutes is on its way.';
+			canResend = true;
+			authPassword = '';
+			return;
+		}
+		me = result.data;
 		authPassword = '';
+		await refreshPats();
 		await refreshBlogs();
 	}
 
+	async function resendVerification() {
+		authError = '';
+		authBusy = true;
+		const result = await request('/auth/resend', {
+			method: 'POST',
+			body: { email: authEmail.trim() }
+		});
+		authBusy = false;
+		if (result.ok) {
+			notice = 'A fresh verification mail is on its way (if the address still needs it).';
+			canResend = false; // the server throttles repeats
+		} else {
+			authError = result.error;
+		}
+	}
+
+	// Personal access tokens -------------------------------------------------
+	async function refreshPats() {
+		const result = await request('/auth/pats');
+		if (result.ok) pats = result.data;
+		else signedOut(result);
+	}
+
+	/** @param {SubmitEvent} event */
+	async function createPat(event) {
+		event.preventDefault();
+		patError = '';
+		if (!patName.trim()) {
+			patError = 'Give the token a name you will recognize later.';
+			return;
+		}
+		patBusy = true;
+		const result = await request('/auth/pats', {
+			method: 'POST',
+			body: { name: patName.trim(), write: patWrite }
+		});
+		patBusy = false;
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			patError = result.error;
+			return;
+		}
+		freshPat = result.data; // `secret` is shown exactly once, now
+		patName = '';
+		patWrite = false;
+		await refreshPats();
+	}
+
+	/** @param {{ id: string, name: string, scopes: string, created_at: number, expires_at: number, last_used_at: number|null, delete_warned?: boolean }} pat */
+	async function deletePat(pat) {
+		if (!pat.delete_warned) {
+			pat.delete_warned = true;
+			patError = `Delete “${pat.name}” again to confirm. Clients using it stop working immediately.`;
+			refreshPats();
+			return;
+		}
+		patError = '';
+		const result = await request(`/auth/pats/${pat.id}`, { method: 'DELETE' });
+		if (!result.ok && result.error !== 'token not found' && !signedOut(result)) {
+			patError = result.error;
+			return;
+		}
+		await refreshPats();
+	}
+
+	function dismissFreshPat() {
+		freshPat = null;
+		refreshPats();
+	}
+
+	// Blogs ------------------------------------------------------------------
 	async function refreshBlogs() {
-		const meResult = await request('/auth/me', { token });
+		const meResult = await request('/auth/me');
+		if (signedOut(meResult)) return;
 		if (meResult.ok) me = meResult.data;
 		await listBlogs();
 	}
 
 	async function listBlogs() {
-		const result = await request('/blogs', { token });
-		if (!result.ok) return;
+		const result = await request('/blogs');
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			newBlogError = result.error;
+			return;
+		}
 		blogs = result.data;
 		await selectBlog(selectedBlogId ?? blogs[0]?.id ?? null);
 	}
 
+	/** @param {string|null} id */
 	async function selectBlog(id) {
 		selectedBlogId = id;
 		posts = [];
@@ -100,23 +214,25 @@
 		if (!id) return;
 		domainDraft = selectedBlog?.domain ?? '';
 		originsDraft = (selectedBlog?.origins ?? []).join('\n');
-		const result = await request(`/blogs/${id}/posts`, { token });
+		const result = await request(`/blogs/${id}/posts`);
 		if (!result.ok) {
+			if (signedOut(result)) return;
 			postsError = result.error;
 			return;
 		}
 		posts = result.data.items;
 	}
 
+	/** @param {SubmitEvent} event */
 	async function createBlog(event) {
 		event.preventDefault();
 		newBlogError = '';
 		const result = await request('/blogs', {
-			token,
 			method: 'POST',
 			body: { name: newBlogName.trim(), slug: newBlogSlug.trim() }
 		});
 		if (!result.ok) {
+			if (signedOut(result)) return;
 			newBlogError = result.error;
 			return;
 		}
@@ -135,21 +251,21 @@
 			.filter(Boolean);
 
 		const originsResult = await request(`/blogs/${selectedBlogId}/origins`, {
-			token,
 			method: 'PUT',
 			body: { origins }
 		});
 		if (!originsResult.ok) {
+			if (signedOut(originsResult)) return;
 			settingsError = originsResult.error;
 			return;
 		}
 		if (domain !== (selectedBlog?.domain ?? '')) {
 			const patch = await request(`/blogs/${selectedBlogId}`, {
-				token,
 				method: 'PATCH',
 				body: { domain: domain === '' ? null : domain }
 			});
 			if (!patch.ok) {
+				if (signedOut(patch)) return;
 				settingsError = patch.error;
 				return;
 			}
@@ -163,6 +279,7 @@
 		editor = { id: null, slug: '', title: '', content_markdown: '', status: 'draft' };
 	}
 
+	/** @param {{ id: string, slug: string, title: string, content_markdown: string, status: string, published_at: number|null, deleted_warned?: boolean }} post */
 	function startEditPost(post) {
 		editorError = '';
 		editor = {
@@ -176,6 +293,7 @@
 	}
 
 	async function saveEditor() {
+		if (!editor) return;
 		editorError = '';
 		busy = true;
 		const path = editor.id
@@ -189,9 +307,10 @@
 					content_markdown: editor.content_markdown,
 					status: editor.status
 				};
-		const result = await request(path, { token, method: editor.id ? 'PATCH' : 'POST', body });
+		const result = await request(path, { method: editor.id ? 'PATCH' : 'POST', body });
 		busy = false;
 		if (!result.ok) {
+			if (signedOut(result)) return;
 			editorError = result.error;
 			return;
 		}
@@ -199,21 +318,23 @@
 		await selectBlog(selectedBlogId);
 	}
 
+	/** @param {{ id: string, slug: string, title: string, content_markdown: string, status: string, published_at: number|null, deleted_warned?: boolean }} post */
 	async function togglePublish(post) {
 		busy = true;
 		const result = await request(`/blogs/${selectedBlogId}/posts/${post.id}`, {
-			token,
 			method: 'PATCH',
 			body: { status: post.status === 'published' ? 'draft' : 'published' }
 		});
 		busy = false;
 		if (!result.ok) {
+			if (signedOut(result)) return;
 			postsError = result.error;
 			return;
 		}
 		await selectBlog(selectedBlogId);
 	}
 
+	/** @param {{ id: string, slug: string, title: string, content_markdown: string, status: string, published_at: number|null, deleted_warned?: boolean }} post */
 	async function deletePost(post) {
 		if (!post.deleted_warned) {
 			post.deleted_warned = true;
@@ -222,11 +343,11 @@
 		}
 		busy = true;
 		const result = await request(`/blogs/${selectedBlogId}/posts/${post.id}`, {
-			token,
 			method: 'DELETE'
 		});
 		busy = false;
 		if (!result.ok) {
+			if (signedOut(result)) return;
 			postsError = result.error;
 			return;
 		}
@@ -234,16 +355,16 @@
 	}
 
 	async function signOut() {
-		await request('/auth/logout', { token });
-		storeToken(null);
-		token = null;
+		await request('/auth/logout', { method: 'POST' });
 		me = null;
+		pats = [];
 		blogs = [];
 		selectedBlogId = null;
 		posts = [];
 		editor = null;
 	}
 
+	/** @param {number|null|undefined} unixSeconds */
 	function formatTimestamp(unixSeconds) {
 		if (!unixSeconds) return '—';
 		return new Date(unixSeconds * 1000).toISOString().slice(0, 16).replace('T', ' ');
@@ -270,6 +391,14 @@
 		<section class="narrow">
 			<h1>Sign in</h1>
 			<p>Manage your blogs and Markdown posts from here. Browsers without a session see the <a href="/">API documentation</a>.</p>
+			{#if notice}
+				<p class="ok" role="status">{notice}</p>
+				{#if canResend}
+					<button type="button" class="link" onclick={resendVerification} disabled={authBusy}>
+						 resend the verification mail
+					</button>
+				{/if}
+			{/if}
 			<form class="stack" onsubmit={submitAuth}>
 				<label for="auth-email">Email</label>
 				<input id="auth-email" type="email" autocomplete="email" bind:value={authEmail} required />
@@ -277,11 +406,18 @@
 				<input id="auth-password" type="password" autocomplete="current-password" bind:value={authPassword} required />
 				<div class="row">
 					<button type="submit" disabled={authBusy}>{authMode === 'login' ? 'Sign in' : 'Create account'}</button>
-					<button type="button" class="link" onclick={() => { authMode = authMode === 'login' ? 'register' : 'login'; authError = ''; }}>
+					<button type="button" class="link" onclick={() => { authMode = authMode === 'login' ? 'register' : 'login'; authError = ''; notice = ''; }}>
 						{authMode === 'login' ? 'Need an account? Register' : 'Already registered? Sign in'}
 					</button>
 				</div>
-				{#if authError}<p class="error" role="alert">{authError}</p>{/if}
+				{#if authError === 'email not verified'}
+					<p class="error" role="alert">This address is not verified yet.</p>
+					<button type="button" class="link" onclick={resendVerification} disabled={authBusy}>
+						Resend the verification mail
+					</button>
+				{:else if authError}
+					<p class="error" role="alert">{authError}</p>
+				{/if}
 			</form>
 		</section>
 	{:else}
@@ -397,6 +533,49 @@
 					<p>Create a blog to start publishing Markdown.</p>
 				</div>
 			{/if}
+
+			<div class="panel">
+				<h2>API tokens</h2>
+				<p>Personal access tokens let CLI tools and scripts call the content API on your behalf with <code>Authorization: Bearer …</code>. They are shown once, expire, and can be revoked anytime. Browsers should use your session, never a token.</p>
+				{#if freshPat}
+					<p class="ok">Token created. Copy the secret now — it will not be shown again:</p>
+					<p><code class="secret">{freshPat.secret}</code></p>
+					<div class="row"><button type="button" onclick={dismissFreshPat}>Done</button></div>
+				{/if}
+				{#if pats.length === 0}
+					<p>No tokens yet.</p>
+				{:else}
+					<div class="table-scroll">
+						<table>
+							<thead><tr><th>Name</th><th>Scopes</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+							<tbody>
+								{#each pats as pat (pat.id)}
+									<tr>
+										<td>{pat.name}</td>
+										<td><span class="pill">{pat.scopes}</span></td>
+										<td>{formatTimestamp(pat.created_at)}</td>
+										<td>{formatTimestamp(pat.expires_at)}</td>
+										<td>{formatTimestamp(pat.last_used_at)}</td>
+										<td class="actions">
+											<button type="button" class="link" onclick={() => deletePat(pat)}>Revoke</button>
+										</td>
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{/if}
+				<form class="stack" onsubmit={createPat}>
+					<label for="pat-name">New token name</label>
+					<input id="pat-name" bind:value={patName} placeholder="ci-script" maxlength="64" required />
+					<label class="check">
+						<input type="checkbox" bind:checked={patWrite} />
+						Allow writing (create and edit blogs and posts)
+					</label>
+					<div><button type="submit" disabled={patBusy}>Create token</button></div>
+					{#if patError}<p class="error" role="alert">{patError}</p>{/if}
+				</form>
+			</div>
 		</section>
 	{/if}
 </main>
@@ -415,11 +594,14 @@
 	.row { display: flex; gap: 16px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
 	.row span { display: grid; gap: 4px; min-width: 0; }
 	.row input { min-width: 120px; }
+	.check { display: flex; gap: 8px; align-items: center; }
+	.check input { width: auto; }
 	button { font: inherit; padding: 8px 18px; border: 1px solid #171717; border-radius: 4px; background: #171717; color: #fff; cursor: pointer; }
 	button.link { background: none; border: 0; color: inherit; padding: 0; text-decoration: underline; text-underline-offset: 4px; }
 	button:disabled { opacity: .45; cursor: default; }
 	.error { color: #171717; background: #f2f2f2; padding: 10px 12px; border-left: 3px solid #171717; }
 	.ok { color: #171717; }
+	.secret { display: inline-block; font-family: var(--mono); font-size: 13px; background: #f2f2f2; padding: 6px 10px; word-break: break-all; }
 	.blog-list { list-style: none; padding: 0; margin: 0 0 24px; display: grid; gap: 6px; }
 	.blog-link { display: block; text-align: left; width: 100%; background: none; color: inherit; border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; }
 	.blog-link code { display: block; font-size: 11px; color: #6e6e6e; }

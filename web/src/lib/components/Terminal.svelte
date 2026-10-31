@@ -1,11 +1,17 @@
 <script>
-	let { code = '', variants, language = 'bash' } = $props();
+	/**
+	 * Terminal display for documentation examples: static `code` or a
+	 * `variants` tab set keyed by client name.
+	 * @type {{ code?: string, variants?: Record<string, string>, language?: string }}
+	 */
+	let { code = '', variants = undefined, language = 'bash' } = $props();
 	const id = $props.id();
 	let selected = $state('curl');
 	const tools = $derived(Object.keys(variants ?? {}));
 	const active = $derived(tools.includes(selected) ? selected : tools[0]);
-	const displayedCode = $derived(variants ? variants[active] : code);
+	const displayedCode = $derived(variants ? (variants[active] ?? '') : code);
 
+	/** @param {KeyboardEvent} event */
 	function navigateTabs(event) {
 		const index = tools.indexOf(active);
 		let next;
@@ -16,7 +22,9 @@
 		else return;
 		event.preventDefault();
 		selected = tools[next];
-		event.currentTarget.parentElement.querySelectorAll('button')[next].focus();
+		const container = /** @type {HTMLElement | null} */ (event.currentTarget);
+		const buttons = container?.parentElement?.querySelectorAll('button');
+		buttons?.[next]?.focus();
 	}
 
 	// Keep the original text intact and let Svelte escape every token.
@@ -26,7 +34,7 @@
 		let end = 0;
 		for (const match of displayedCode.matchAll(pattern)) {
 			if (match.index > end) result.push({ text: displayedCode.slice(end, match.index) });
-			result.push({ text: match[0], kind: Object.keys(match.groups).find((key) => match.groups[key] !== undefined) });
+			result.push({ text: match[0], kind: Object.keys(match.groups ?? {}).find((key) => (match.groups ?? {})[key] !== undefined) });
 			end = match.index + match[0].length;
 		}
 		if (end < displayedCode.length) result.push({ text: displayedCode.slice(end) });

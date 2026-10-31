@@ -5,13 +5,13 @@ use axum::response::IntoResponse;
 
 use crate::error::Error;
 use crate::http::AppState;
-use crate::http::auth::AuthedUser;
+use crate::http::auth::{AuthedUser, AuthedWriter};
 use crate::http::json_body::StrictJson;
 use crate::post::service::{CreatePostRequest, ListResponse, PostResponse, UpdatePostRequest};
 
 pub async fn create(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    AuthedWriter(user): AuthedWriter,
     Path(blog_id): Path<String>,
     StrictJson(body): StrictJson<CreatePostRequest>,
 ) -> Result<(StatusCode, Json<PostResponse>), Error> {
@@ -21,7 +21,7 @@ pub async fn create(
 
 pub async fn list(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    session: AuthedUser,
     Path(blog_id): Path<String>,
     RawQuery(query): RawQuery,
 ) -> Result<Json<ListResponse<PostResponse>>, Error> {
@@ -30,7 +30,7 @@ pub async fn list(
         state
             .posts
             .page_for_blog(
-                user.id,
+                session.user.id,
                 &blog_id,
                 query.page.as_deref(),
                 query.size.as_deref(),
@@ -41,16 +41,16 @@ pub async fn list(
 
 pub async fn get(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    session: AuthedUser,
     Path((blog_id, post_id)): Path<(String, String)>,
 ) -> Result<Json<PostResponse>, Error> {
-    let post = state.posts.get(user.id, &blog_id, &post_id).await?;
+    let post = state.posts.get(session.user.id, &blog_id, &post_id).await?;
     Ok(Json(post))
 }
 
 pub async fn update(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    AuthedWriter(user): AuthedWriter,
     Path((blog_id, post_id)): Path<(String, String)>,
     StrictJson(body): StrictJson<UpdatePostRequest>,
 ) -> Result<Json<PostResponse>, Error> {
@@ -63,7 +63,7 @@ pub async fn update(
 
 pub async fn delete(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    AuthedWriter(user): AuthedWriter,
     Path((blog_id, post_id)): Path<(String, String)>,
 ) -> Result<impl IntoResponse, Error> {
     state.posts.delete(user.id, &blog_id, &post_id).await?;

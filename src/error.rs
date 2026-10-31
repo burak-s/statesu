@@ -17,6 +17,9 @@ pub enum Error {
     Forbidden,
     BlogNotFound,
     PostNotFound,
+    PatNotFound,
+    /// Login succeeded cryptographically but the address was never confirmed.
+    EmailNotVerified,
     SlugTaken,
     DomainTaken,
     PayloadTooLarge,
@@ -89,6 +92,8 @@ impl Error {
             Error::Forbidden => "forbidden",
             Error::BlogNotFound => "blog not found",
             Error::PostNotFound => "post not found",
+            Error::PatNotFound => "token not found",
+            Error::EmailNotVerified => "email not verified",
             Error::SlugTaken => "slug already in use",
             Error::DomainTaken => "domain already claimed",
             Error::PayloadTooLarge => "request body too large",
@@ -116,7 +121,8 @@ impl Error {
             | Error::InvalidToken
             | Error::TokenExpired => StatusCode::UNAUTHORIZED,
             Error::Forbidden => StatusCode::FORBIDDEN,
-            Error::BlogNotFound | Error::PostNotFound => StatusCode::NOT_FOUND,
+            Error::BlogNotFound | Error::PostNotFound | Error::PatNotFound => StatusCode::NOT_FOUND,
+            Error::EmailNotVerified => StatusCode::FORBIDDEN,
             Error::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Error::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Error::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -147,6 +153,8 @@ mod tests {
         assert_eq!(Error::Forbidden.message(), "forbidden");
         assert_eq!(Error::BlogNotFound.message(), "blog not found");
         assert_eq!(Error::PostNotFound.message(), "post not found");
+        assert_eq!(Error::PatNotFound.message(), "token not found");
+        assert_eq!(Error::EmailNotVerified.message(), "email not verified");
         assert_eq!(Error::SlugTaken.message(), "slug already in use");
         assert_eq!(Error::DomainTaken.message(), "domain already claimed");
         assert_eq!(Error::PayloadTooLarge.message(), "request body too large");

@@ -7,7 +7,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use tokio::sync::Semaphore;
 
 use crate::config::Config;
@@ -35,6 +35,8 @@ pub struct AppState {
     pub blogs: crate::blog::service::BlogService,
     pub posts: crate::post::service::PostService,
     pub assets: Arc<dyn static_files::StaticAssets>,
+    /// Verification mail delivery; never called outside register/resend.
+    pub mailer: Arc<dyn crate::mail::Mailer>,
     pub limiters: Limiters,
     pub concurrency_gate: Arc<Semaphore>,
     /// Content-Security-Policy for the docs responses.
@@ -70,6 +72,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
+        .route("/auth/verify", post(auth::verify))
+        .route("/auth/resend", post(auth::resend))
+        .route("/auth/pats", post(auth::create_pat).get(auth::list_pats))
+        .route("/auth/pats/{pat_id}", delete(auth::delete_pat))
+        .route("/auth/sessions", delete(auth::logout_all))
         .route("/blogs", post(blog::create).get(blog::list))
         .route("/blogs/{blog_id}", patch(blog::update))
         .route("/blogs/{blog_id}/origins", put(blog::set_origins))
@@ -166,6 +173,20 @@ pub async fn request_guard(
         return response;
     }
 
+    // Unauthenticated write endpoints (register/login/verify/resend) pin
+    // browser origins: any same-kind cross-site write is rejected before
+    // limiter or handler run. Absent Origin (curl, wget) stays allowed.
+    if let Some(origin) = origin.as_ref()
+        && class == RouteClass::SensitiveAuth
+        && !is_preflight
+        && !state
+            .config
+            .public_url
+            .matches_origin(origin.to_str().unwrap_or(""))
+    {
+        return Error::Forbidden.into_response();
+    }
+
     let limiter = match class {
         RouteClass::SensitiveAuth => &state.limiters.auth,
         _ => &state.limiters.general,
@@ -204,7 +225,7 @@ pub async fn request_core(request: Request, next: Next) -> Response {
 fn body_limit_for(method: &Method, path: &str) -> Option<usize> {
     match *method {
         Method::POST | Method::PATCH | Method::PUT => {
-            if path == "/auth/register" || path == "/auth/login" {
+            if path.starts_with("/auth") {
                 Some(AUTH_BODY_LIMIT)
             } else if path.starts_with("/blogs") {
                 Some(CMS_BODY_LIMIT)
@@ -239,7 +260,10 @@ fn class_for_method(method: &Method, path: &str) -> RouteClass {
     let is_read = method == Method::GET || method == Method::HEAD;
     if is_read && path.starts_with("/public/") {
         RouteClass::PublicDelivery
-    } else if matches!(path, "/auth/register" | "/auth/login") {
+    } else if matches!(
+        path,
+        "/auth/register" | "/auth/login" | "/auth/verify" | "/auth/resend"
+    ) {
         RouteClass::SensitiveAuth
     } else {
         RouteClass::Restricted
@@ -279,7 +303,7 @@ fn apply_cors(
         );
         headers.insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("Authorization, Content-Type"),
+            HeaderValue::from_static("Authorization, Content-Type, X-CSRF-Token"),
         );
         headers.insert(
             header::ACCESS_CONTROL_MAX_AGE,

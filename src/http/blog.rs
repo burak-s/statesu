@@ -7,12 +7,12 @@ use crate::blog::service::{
 };
 use crate::error::Error;
 use crate::http::AppState;
-use crate::http::auth::AuthedUser;
+use crate::http::auth::{AuthedUser, AuthedWriter};
 use crate::http::json_body::StrictJson;
 
 pub async fn create(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    AuthedWriter(user): AuthedWriter,
     StrictJson(body): StrictJson<CreateBlogRequest>,
 ) -> Result<(StatusCode, Json<BlogResponse>), Error> {
     let created = state.blogs.create(user.id, &body).await?;
@@ -21,14 +21,14 @@ pub async fn create(
 
 pub async fn list(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    session: AuthedUser,
 ) -> Result<Json<Vec<BlogResponse>>, Error> {
-    Ok(Json(state.blogs.list_for_owner(user.id).await?))
+    Ok(Json(state.blogs.list_for_owner(session.user.id).await?))
 }
 
 pub async fn update(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    AuthedWriter(user): AuthedWriter,
     Path(blog_id): Path<String>,
     StrictJson(body): StrictJson<UpdateBlogRequest>,
 ) -> Result<Json<BlogResponse>, Error> {
@@ -37,7 +37,7 @@ pub async fn update(
 
 pub async fn set_origins(
     State(state): State<AppState>,
-    AuthedUser(user): AuthedUser,
+    AuthedWriter(user): AuthedWriter,
     Path(blog_id): Path<String>,
     StrictJson(body): StrictJson<ReplaceOriginsRequest>,
 ) -> Result<Json<OriginsResponse>, Error> {

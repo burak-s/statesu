@@ -5,14 +5,16 @@ use axum::Router;
 use sqlx::SqlitePool;
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
 
+use crate::auth::pat_repo::PatRepository;
 use crate::auth::repo::UserRepository;
 use crate::auth::service::AuthService;
+use crate::auth::session_repo::SessionRepository;
+use crate::auth::verification_repo::VerificationTokenRepository;
 use crate::blog::repo::BlogRepository;
 use crate::blog::service::BlogService;
 use crate::clock::Clock;
 use crate::config::{Config, POOL_ACQUIRE_TIMEOUT};
 use crate::crypto::email::EmailCipher;
-use crate::crypto::jwt::JwtIssuer;
 use crate::crypto::password::PasswordHasher;
 use crate::error::{Error, InternalError};
 use crate::http::rate_limit::RateLimiter;
@@ -57,6 +59,21 @@ pub async fn build_app(
     clock: Arc<dyn Clock>,
     assets: Arc<dyn StaticAssets>,
 ) -> Result<App, Error> {
+    let mailer: Arc<dyn crate::mail::Mailer> = Arc::new(crate::mail::ResendMailer::new(
+        config.resend_api_key.clone(),
+        config.mail_from.clone(),
+    )?);
+    build_app_with_mailer(config, clock, assets, mailer).await
+}
+
+/// Composition root with an injected mailer; tests substitute a recorder
+/// here so nothing leaves the machine.
+pub async fn build_app_with_mailer(
+    config: Config,
+    clock: Arc<dyn Clock>,
+    assets: Arc<dyn StaticAssets>,
+    mailer: Arc<dyn crate::mail::Mailer>,
+) -> Result<App, Error> {
     let pool = open_database(&config).await?;
     let users = UserRepository::new(pool.clone());
     let blog_repo = BlogRepository::new(pool.clone());
@@ -64,13 +81,18 @@ pub async fn build_app(
 
     let cipher = EmailCipher::new(config.email_key, config.email_hmac_key.clone());
     let hasher = PasswordHasher::new(config.argon2_concurrency)?;
-    let jwt = Arc::new(JwtIssuer::new(
-        config.jwt_secret.clone(),
-        config.jwt_audience.clone(),
-        clock.clone(),
-    ));
 
-    let auth_service = AuthService::new(users.clone(), hasher, cipher.clone(), jwt.clone());
+    let auth_service = AuthService::new(
+        users.clone(),
+        SessionRepository::new(pool.clone()),
+        VerificationTokenRepository::new(pool.clone()),
+        PatRepository::new(pool.clone()),
+        hasher,
+        cipher.clone(),
+        mailer.clone(),
+        clock.clone(),
+        config.public_url.clone(),
+    );
     let blog_service = BlogService::new(blog_repo.clone(), clock.clone());
     let post_service = PostService::new(post_repo, blog_repo, clock.clone());
 
@@ -89,6 +111,7 @@ pub async fn build_app(
         concurrency_gate: Arc::new(tokio::sync::Semaphore::new(config.max_concurrency)),
         config,
         auth_service,
+        mailer,
         blogs: blog_service,
         posts: post_service,
         assets,

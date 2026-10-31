@@ -82,16 +82,18 @@ const post = await response.json();
 document.querySelector('#title').textContent = post.title;
 // Markdown is rendered by your own renderer — keep raw HTML disabled.`
 	};
-	const wgetAuth = (path) => `# Bash: prompt without saving your password in shell history.
-read -r -s -p 'Password: ' PASSWORD; printf '\\n'
-BODY=$(jq -n --arg email "$EMAIL" --arg password "$PASSWORD" \\
-  '{email: $email, password: $password}')
-TOKEN=$(wget -O- --header='Content-Type: application/json' \\
-  --post-data="$BODY" "$API${path}" | jq -er '.token')
-unset PASSWORD BODY`;
+	const wgetTokenHint = `# Bash: prompt without saving your secret in shell history.
+read -r -s -p 'Token: ' TOKEN; printf '\\n'`;
 	const wgetExamples = {
-		register: wgetAuth('/auth/register'),
-		login: wgetAuth('/auth/login'),
+		register: `read -r -s -p 'Password: ' PASSWORD; printf '\\n'
+BODY=$(jq -n --arg email "$EMAIL" --arg password "$PASSWORD" \
+  '{email: $email, password: $password}')
+wget -O- --header='Content-Type: application/json' \
+  --post-data="$BODY" "$API/auth/register" | jq .
+# 202 accepted; open the verification link in the mail, then sign in at
+# /dashboard and mint an su_pat_ token there.
+unset PASSWORD BODY`,
+		login: wgetTokenHint,
 		createBlog: `BODY=$(jq -n '{name: "Writing desk", slug: "writing-desk"}')
 BLOG_ID=$(wget -O- --header="Authorization: Bearer $TOKEN" \\
   --header='Content-Type: application/json' \\
@@ -116,19 +118,25 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 # Success: HTTP 204, no response body.`
 	};
 	const endpoints = [
-		['POST', '/auth/register', 'No', 'Create an account; returns token and expires_at. 201.'],
-		['POST', '/auth/login', 'No', 'Authenticate; returns the same token fields. 200.'],
-		['POST', '/auth/logout', 'No', 'Clear any legacy auth cookie. Returns 204; bearer tokens remain valid until expiry.'],
-		['GET', '/auth/me', 'Bearer', 'Check your token; returns id and email. 200.'],
-		['POST', '/blogs', 'Bearer', 'Create a blog: name, slug, optional domain. 201.'],
-		['GET', '/blogs', 'Bearer', 'List your blogs, newest first. 200.'],
-		['PATCH', '/blogs/{blogID}', 'Bearer', 'Rename or change/clear the domain. 200.'],
-		['PUT', '/blogs/{blogID}/origins', 'Bearer', 'Replace the exact browser origins allowed to call delivery. 200.'],
-		['POST', '/blogs/{blogID}/posts', 'Bearer', 'Create a post: slug, title, content_markdown, optional status. 201.'],
-		['GET', '/blogs/{blogID}/posts', 'Bearer', 'List your posts, newest first; page and size. 200.'],
-		['GET', '/blogs/{blogID}/posts/{postID}', 'Bearer', 'Read one of your posts. 200.'],
-		['PATCH', '/blogs/{blogID}/posts/{postID}', 'Bearer', 'Edit fields or toggle draft/published. 200.'],
-		['DELETE', '/blogs/{blogID}/posts/{postID}', 'Bearer', 'Soft-delete a post; its slug stays reserved. 204.'],
+		['POST', '/auth/register', 'No', 'Create an unverified account; sends a verification mail. 202.'],
+		['POST', '/auth/verify', 'No', 'Confirm the email with the link token; single use, 30-minute expiry. 200.'],
+		['POST', '/auth/resend', 'No', 'Re-send the verification mail; throttled, generic answer. 202.'],
+		['POST', '/auth/login', 'No', 'Dashboard sign-in; sets an HttpOnly session cookie. No token body.'],
+		['POST', '/auth/logout', 'Session', 'Revoke this session and clear its cookies. 204.'],
+		['DELETE', '/auth/sessions', 'Session', 'Sign out everywhere: revoke every session. 204.'],
+		['GET', '/auth/me', 'Session', 'Check the session; returns id and email. 200.'],
+		['POST', '/auth/pats', 'Session', 'Mint a personal access token; the su_pat_ secret is shown once. 201.'],
+		['GET', '/auth/pats', 'Session', 'List your tokens (metadata only; never the secret). 200.'],
+		['DELETE', '/auth/pats/{patID}', 'Session', 'Revoke a token; clients stop working immediately. 204.'],
+		['POST', '/blogs', 'Token', 'Create a blog: name, slug, optional domain. 201.'],
+		['GET', '/blogs', 'Token', 'List your blogs, newest first. 200.'],
+		['PATCH', '/blogs/{blogID}', 'Token', 'Rename or change/clear the domain. 200.'],
+		['PUT', '/blogs/{blogID}/origins', 'Token', 'Replace the exact browser origins allowed to call delivery. 200.'],
+		['POST', '/blogs/{blogID}/posts', 'Token', 'Create a post: slug, title, content_markdown, optional status. 201.'],
+		['GET', '/blogs/{blogID}/posts', 'Token', 'List your posts, newest first; page and size. 200.'],
+		['GET', '/blogs/{blogID}/posts/{postID}', 'Token', 'Read one of your posts. 200.'],
+		['PATCH', '/blogs/{blogID}/posts/{postID}', 'Token', 'Edit fields or toggle draft/published. 200.'],
+		['DELETE', '/blogs/{blogID}/posts/{postID}', 'Token', 'Soft-delete a post; its slug stays reserved. 204.'],
 		['GET', '/public/blogs/{blogSlug}', 'No', 'Public blog profile: name, slug, domain. 200.'],
 		['GET', '/public/blogs/{blogSlug}/posts', 'No', 'Published posts only, newest first; page and size. 200.'],
 		['GET', '/public/blogs/{blogSlug}/posts/{postSlug}', 'No', 'One published post with its Markdown. 200.']
@@ -176,7 +184,7 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 		<Terminal code={examples.setup} />
 
 		<h3>01 / Create an account</h3>
-		<p>Register once: 8–72 byte passwords with at least one letter and one digit. Authentication is bearer-only — the API never issues or accepts session cookies. Treat the token like a password.</p>
+		<p>Register once: 8–72 byte passwords with at least one letter and one digit. The address is confirmed by a verification mail before the account works; links expire after 30 minutes and can be re-sent from the dashboard. For scripts and CLI tools, mint a personal access token (<code>su_pat_…</code>) in the dashboard's <a href="/dashboard">API tokens</a> panel and pass it as <code>Authorization: Bearer $TOKEN</code>. Tokens are shown exactly once at creation, expire after at most 90 days, and can be revoked at any time.</p>
 		<Terminal variants={{ curl: examples.register, wget: wgetExamples.register }} />
 
 		<h3>02 / Create a blog</h3>
@@ -214,7 +222,7 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 
 	<section id="reference">
 		<h2>API reference</h2>
-		<p>Base URL: <code>https://statesu.com</code>. Bodies are JSON; send <code>Content-Type: application/json</code> for JSON bodies and <code>Authorization: Bearer $TOKEN</code> for authenticated requests. Auth is bearer-only; do not send the token in a cookie. <code>GET /blogs</code> and blog settings require the blog to belong to you; unknown and foreign resources both return 404.</p>
+		<p>Base URL: <code>https://statesu.com</code>. Bodies are JSON; send <code>Content-Type: application/json</code> for JSON bodies and <code>Authorization: Bearer $TOKEN</code> for token-authenticated requests. The dashboard itself uses an HttpOnly session cookie plus a CSRF header — never a token — and <code>/auth</code> endpoints refuse tokens by design. <code>GET /blogs</code> and blog settings require the blog to belong to you; unknown and foreign resources both return 404.</p>
 		<p>Requests are rate-limited per client IP. Exceeding a limit returns 429 with a <code>Retry-After</code> header; public delivery reads have a separate, larger limit.</p>
 		<div class="table-scroll">
 			<table>
@@ -235,16 +243,16 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 		<Terminal code={'{"error":"slug already in use"}'} language="json" />
 		<ul>
 			<li><strong>400</strong> — invalid JSON, unknown fields, malformed emails/passwords, invalid slugs, titles, content or pagination.</li>
-			<li><strong>401</strong> — incorrect credentials, or a missing, invalid or expired token.</li>
-			<li><strong>403</strong> — a limit is reached, such as the per-user blog quota.</li>
-			<li><strong>404</strong> — unknown or foreign blog or post; drafts are also invisible through public routes.</li>
+			<li><strong>401</strong> — incorrect credentials, a missing, invalid or expired token, or an unverified address on login (403 with <code>email not verified</code>).</li>
+			<li><strong>403</strong> — a limit is reached (such as the per-user blog quota), a read-only token attempted a write, or a cross-site browser write was refused.</li>
+			<li><strong>404</strong> — unknown or foreign blog or post or token; drafts are also invisible through public routes.</li>
 			<li><strong>409</strong> — a duplicate slug or domain, an already-registered email, or a <code>(blog, slug)</code> post conflict.</li>
 			<li><strong>413</strong> — the body is too large: 256 KiB for blog and post bodies, 16 KiB for auth.</li>
 			<li><strong>415</strong> — the body is not <code>application/json</code>.</li>
 			<li><strong>429</strong> — rate limit exceeded; honor <code>Retry-After</code>.</li>
 			<li><strong>500</strong> — server error; retry later.</li>
 		</ul>
-		<p><code>curl --fail-with-body</code> preserves the error body and exits nonzero on HTTP errors. Logout clears a legacy cookie only and does not revoke a bearer token — discard the token locally: <code>unset TOKEN</code>.</p>
+		<p><code>curl --fail-with-body</code> preserves the error body and exits nonzero on HTTP errors. Logout revokes the session server-side; a token is revoked the moment you delete it in the dashboard (401 everywhere afterwards). Links from verification mails point at your deployment's own origin — configured, never inferred from request headers.</p>
 	</section>
 </main>
 
