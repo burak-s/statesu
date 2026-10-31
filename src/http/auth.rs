@@ -289,7 +289,7 @@ fn require_csrf(parts: &Parts, state: &AppState) -> Result<(), Error> {
         .headers
         .get(header::ORIGIN)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|origin| !state.config.public_url.matches_origin(origin));
+        .is_some_and(|origin| !state.config.origin_allowed(origin));
     if foreign_origin {
         return Err(Error::Forbidden);
     }

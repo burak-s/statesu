@@ -162,6 +162,18 @@ impl IpNet {
 }
 
 impl Config {
+    /// True when an `Origin` header value is ours for same-site write pinning:
+    /// the public URL (the dashboard origin) or any explicitly allowlisted
+    /// origin (the dev dashboard through the Vite proxy). Attackers cannot
+    /// extend the list, so this stays a server decision.
+    pub fn origin_allowed(&self, origin: &str) -> bool {
+        self.public_url.matches_origin(origin)
+            || self
+                .allowed_origins
+                .iter()
+                .any(|allowed| allowed.eq_ignore_ascii_case(origin))
+    }
+
     pub fn from_env() -> Result<Config, Error> {
         let addr =
             normalize_addr(&env_no_empty(ADDR_ENV)?.unwrap_or_else(|| DEFAULT_ADDR.to_owned()))?;

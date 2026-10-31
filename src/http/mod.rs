@@ -176,13 +176,11 @@ pub async fn request_guard(
     // Unauthenticated write endpoints (register/login/verify/resend) pin
     // browser origins: any same-kind cross-site write is rejected before
     // limiter or handler run. Absent Origin (curl, wget) stays allowed.
+    // The public URL and the dashboard allowlist both count as same-site.
     if let Some(origin) = origin.as_ref()
         && class == RouteClass::SensitiveAuth
         && !is_preflight
-        && !state
-            .config
-            .public_url
-            .matches_origin(origin.to_str().unwrap_or(""))
+        && !state.config.origin_allowed(origin.to_str().unwrap_or(""))
     {
         return Error::Forbidden.into_response();
     }
