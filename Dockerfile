@@ -1,3 +1,4 @@
+# --- Documentation build (static SvelteKit output) -------------------------
 FROM node:24-alpine AS web
 
 WORKDIR /src/web
@@ -8,37 +9,43 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.27-alpine AS builder
+# --- Static musl backend build ---------------------------------------------
+FROM rust:1.99.1-alpine AS builder
+
+RUN apk add --no-cache build-base ca-certificates pkgconf
 
 WORKDIR /src
 
-COPY go.mod go.sum ./
-RUN go mod download
+# Warm the dependency cache with a stub crate before copying application code.
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src \
+ && touch src/lib.rs \
+ && printf 'fn main() {}\n' > src/main.rs \
+ && cargo build --release --locked --target x86_64-unknown-linux-musl
 
-COPY . .
-COPY --from=web /src/web/build ./internal/spa/dist
+COPY src ./src
+COPY migrations ./migrations
+COPY --from=web /src/web/build ./assets/dist
 
-RUN CGO_ENABLED=0 GOOS=linux go build \
-    -trimpath \
-    -ldflags="-s -w" \
-    -o /out/statesu \
-    ./cmd/statesu
+# Rebuild only the application crate; dependencies stay cached.
+RUN touch src/lib.rs src/main.rs \
+ && cargo build --release --locked --target x86_64-unknown-linux-musl
 
+# --- Minimal runtime -------------------------------------------------------
 FROM alpine:3.23
 
-RUN apk add --no-cache ca-certificates tzdata \
- && addgroup -S app \
- && adduser -S -G app -H -h /app app \
+RUN apk add --no-cache ca-certificates \
  && mkdir -p /app /data \
- && chown -R app:app /app /data
+ && chown -R 10001:10001 /app /data
 
 WORKDIR /app
 
-COPY --from=builder --chown=app:app /out/statesu /app/statesu
+COPY --from=builder --chown=10001:10001 \
+    /src/target/x86_64-unknown-linux-musl/release/statesu /app/statesu
 
 ENV STATESU_ADDR=:8088
 
 EXPOSE 8088
-USER app:app
+USER 10001:10001
 
 ENTRYPOINT ["/app/statesu"]

@@ -1,0 +1,4 @@
+# `rsa` is an optional sqlx-mysql dependency. This service only enables the
+# SQLite feature, so the affected code is not compiled or shipped.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]

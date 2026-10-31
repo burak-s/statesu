@@ -5,7 +5,7 @@ user statuses: update your status as it changes and retrieve it for display
 through your own clients, websites, and integrations. The homepage covers registration, login, publishing, public reads,
 pagination and deletion using curl, GNU wget and jq as example HTTP clients,
 with switchable tabs in each request example. There are no web account forms,
-sessions or state management pages. The JSON API remains in the Go backend.
+sessions or state management pages. The JSON API is implemented by the Rust backend in the repository root.
 
 ## Development
 
@@ -17,12 +17,14 @@ make dev
 
 The documentation doesn't fetch API data. To try its command examples against a
 local server, run `make run` separately and set `API=http://localhost:8080` in
-your shell.
+your shell. The Rust API is bearer-only; browser sessions and cookies are not
+used. Build and test with `make build`, `make test`, `make fmt`, and
+`make clippy`.
 
 ## Build
 
 `make web` runs `npm run build` and copies `web/build/` into
-`internal/spa/dist/` for embedding in the Go binary. The homepage is prerendered
+`assets/dist/` for embedding in the Rust binary. The homepage is prerendered
 into `index.html`, so documentation and default curl examples are readable without
 JavaScript. Switching terminal tabs uses client-side JavaScript. Unknown
 paths, including the removed web-app pages, return 404.

@@ -64,8 +64,8 @@ curl --fail-with-body -sS "$API/state/latest" | jq .`,
   -H "Authorization: Bearer $TOKEN"
 # Success: HTTP 204, no response body.`,
 		response: `{
-  "state_id": "example-state-id",
-  "user_id": "example-user-id",
+  "state_id": "0192f3a4-5b6c-7d8e-9f01-23456789abcd",
+  "user_id": "0192f3a4-5b6c-7d8e-9f01-0123456789ab",
   "email": "you@example.com",
   "text": "shipping something small",
   "created_at": 1760000000,
@@ -115,11 +115,12 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 	const endpoints = [
 		['POST', '/auth/register', 'No', 'Create an account; returns id, email, token and expires_at. 201.'],
 		['POST', '/auth/login', 'No', 'Authenticate with email and password; returns the same token fields. 200.'],
+		['POST', '/auth/logout', 'No', 'Clear any legacy auth cookie. Returns 204; bearer tokens remain valid until expiry.'],
+		['GET', '/auth/me', 'Bearer', 'Check your token; returns id and email. 200.'],
 		['POST', '/state', 'Bearer', 'Body: text and expires_at. Returns the new state. 201.'],
 		['GET', '/state?email=…', 'No', 'Required email; optional page and size. Returns items, page, size and total. 200.'],
 		['GET', '/state/latest', 'No', 'Optional email filter. Returns a state with its owner’s email. 200.'],
-		['DELETE', '/state/{stateID}', 'Bearer', 'Delete your own state. No response body. 204.'],
-		['GET', '/auth/me', 'Bearer', 'Check your token; returns id and email. 200.']
+		['DELETE', '/state/{stateID}', 'Bearer', 'Delete your own state. No response body. 204.']
 	];
 </script>
 
@@ -164,7 +165,7 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 		<Terminal code={examples.setup} />
 
 		<h3>01 / Create an account</h3>
-		<p>Register once. Use a password of 8–72 bytes with at least one letter and one digit. The response includes a bearer token; the command below stores it in <code>TOKEN</code>.</p>
+		<p>Register once. Use a password of 8–72 bytes with at least one letter and one digit. The response includes a bearer token; the command below stores it in <code>TOKEN</code>. Authentication is bearer-only: the API never issues or accepts session cookies.</p>
 		<Terminal variants={{ curl: examples.register, wget: wgetExamples.register }} />
 		<p>If a command fails, stop and resolve the error before continuing. Treat the token like a password: don't commit it, paste it into public logs, or share it.</p>
 
@@ -172,6 +173,7 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 		<p>Send your status text and an expiration timestamp. This example sets the expiration to one day from now and saves the state ID for deletion later. Expiration does not automatically hide or delete the state.</p>
 		<Terminal variants={{ curl: examples.post, wget: wgetExamples.post }} />
 		<p>Text is trimmed, must not be empty, and has a 4096-byte limit. The entire <code>POST /state</code> JSON body must be at most 32 KiB (32,768 bytes), including whitespace and JSON escapes. <code>expires_at</code> is required: Unix seconds, in the future, at most 30 days away. It is not a duration or a millisecond timestamp.</p>
+		<p>IDs are UUIDv7, and <code>created_at</code>/<code>expires_at</code> are Unix seconds. Send <code>Content-Type: application/json</code>; missing or unsupported content types are rejected.</p>
 
 		<h3>03 / Display it anywhere</h3>
 		<p>Fetch your latest state by email and use the <code>text</code> field wherever you want to show your status. Your client controls the display and when to fetch updates. Reading is public and needs no token. Always URL-encode email query parameters, especially addresses containing <code>+</code>.</p>
@@ -190,7 +192,7 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 		<p>Already registered? Use login instead. Authentication responses include the token's expiration time in <code>expires_at</code>. When a token expires, log in again.</p>
 		<Terminal variants={{ curl: examples.login, wget: wgetExamples.login }} />
 		<h3>List your states</h3>
-		<p>States are returned newest first. Page numbering starts at 1; the default size is 20 and the maximum is 100. An unknown email returns an empty list.</p>
+		<p>States are returned newest first. Page numbering starts at 1; the default size is 20 and the maximum is 100. An unknown email returns an empty list. Malformed or non-positive <code>page</code> and <code>size</code> values return 400.</p>
 		<Terminal variants={{ curl: examples.list, wget: wgetExamples.list }} />
 		<h3>Delete a state</h3>
 		<p>Use the <code>STATE_ID</code> saved when publishing, or a <code>state_id</code> from your history. Only the owner can delete a state.</p>
@@ -200,7 +202,8 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 
 	<section id="reference">
 		<h2>API reference</h2>
-		<p>Base URL: <code>https://statesu.com</code>. Request and response bodies are JSON. Status <code>text</code> is untrusted plain text; see <a href="#safe-rendering">safe status rendering</a> before displaying it. Send <code>Content-Type: application/json</code> for JSON bodies and <code>Authorization: Bearer $TOKEN</code> for authenticated requests.</p>
+		<p>Base URL: <code>https://statesu.com</code>. Request and response bodies are JSON. Status <code>text</code> is untrusted plain text; see <a href="#safe-rendering">safe status rendering</a> before displaying it. Send <code>Content-Type: application/json</code> for JSON bodies and <code>Authorization: Bearer $TOKEN</code> for authenticated requests. Auth is bearer-only; do not send the token in a cookie.</p>
+		<p>Auth and write requests are rate-limited per client IP. Exceeding a limit returns 429 with a <code>Retry-After</code> header. Public reads have a separate, larger limit.</p>
 		<div class="table-scroll">
 			<table>
 				<thead><tr><th>Method / endpoint</th><th>Auth</th><th>Behavior</th></tr></thead>
@@ -214,14 +217,16 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 		<h3>Error responses and HTTP status codes</h3>
 		<Terminal code={examples.error} language="json" />
 		<ul>
-			<li><strong>400</strong> — invalid JSON, invalid credentials format, missing email, or invalid text / expiration.</li>
+			<li><strong>400</strong> — invalid JSON or unknown fields, invalid email/password format, missing email, or invalid text / expiration / pagination.</li>
 			<li><strong>401</strong> — incorrect login credentials, or a missing, invalid or expired token.</li>
 			<li><strong>404</strong> — no latest state, or the state to delete doesn't exist / isn't yours.</li>
 			<li><strong>409</strong> — an account with that email already exists; log in instead.</li>
-			<li><strong>413</strong> — the <code>POST /state</code> request body exceeds 32 KiB.</li>
+			<li><strong>413</strong> — the request body is too large: 32 KiB for <code>POST /state</code>, 16 KiB for auth bodies.</li>
+			<li><strong>415</strong> — the body is not <code>application/json</code>.</li>
+			<li><strong>429</strong> — rate limit exceeded; inspect <code>Retry-After</code> and retry later.</li>
 			<li><strong>500</strong> — server error; retry later.</li>
 		</ul>
-		<p><code>curl --fail-with-body</code> preserves the error body and exits nonzero on HTTP errors. Use curl's <code>-i</code> or wget's <code>--server-response</code> to inspect HTTP status and headers. wget also exits nonzero on HTTP errors. Clear your shell token when finished: <code>unset TOKEN</code>.</p>
+		<p><code>curl --fail-with-body</code> preserves the error body and exits nonzero on HTTP errors. Use curl's <code>-i</code> or wget's <code>--server-response</code> to inspect HTTP status and headers. wget also exits nonzero on HTTP errors. Logout clears a legacy cookie only; it does not revoke a bearer token, so discard the token locally. Clear your shell token when finished: <code>unset TOKEN</code>.</p>
 	</section>
 </main>
 

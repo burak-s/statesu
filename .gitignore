@@ -1,9 +1,10 @@
 # Build output
 /bin/
+/target/
 
 # Embedded SPA build (produced by `make web` from web/build/)
-/internal/spa/dist/*
-!/internal/spa/dist/.gitkeep
+/assets/dist/*
+!/assets/dist/.gitkeep
 
 # Frontend
 /web/node_modules/
@@ -18,14 +19,10 @@ node_modules/
 *.so
 *.dylib
 
-# Go test/coverage artifacts
+# Test/coverage artifacts
 *.test
 *.out
 coverage.*
-
-# Go workspace files
-go.work
-go.work.sum
 
 # Environment / secrets
 .env

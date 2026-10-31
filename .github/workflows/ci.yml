@@ -18,16 +18,19 @@ permissions:
 jobs:
    build-and-test:
       runs-on: self-hosted
-      timeout-minutes: 15
+      timeout-minutes: 20
       steps:
          - name: Checkout
            uses: actions/checkout@v6
 
-         - name: Set up Go
-           uses: actions/setup-go@v5
+         - name: Set up Rust
+           uses: dtolnay/rust-toolchain@stable
            with:
-              go-version-file: go.mod
-              cache: false
+              toolchain: 1.99.1
+              components: rustfmt, clippy
+
+         - name: Cache Rust
+           uses: Swatinem/rust-cache@v2
 
          - name: Set up Node
            uses: actions/setup-node@v4
@@ -41,23 +44,22 @@ jobs:
               cd web
               npm ci
               npm run build
-              mkdir -p ../internal/spa/dist
-              cp -r build/. ../internal/spa/dist/
+              mkdir -p ../assets/dist
+              cp -r build/. ../assets/dist/
 
-         - name: Verify dependencies
-           run: go mod verify
+         - name: Format
+           run: cargo fmt --all --check
 
-         - name: Vet
-           run: go vet ./...
-
-         - name: Build
-           run: go build -v ./...
+         - name: Clippy
+           run: cargo clippy --all-targets --locked -- -D warnings
 
          - name: Test
-           run: go test -v ./...
+           run: cargo test --all-targets --locked
 
-         - name: golangci-lint
-           uses: golangci/golangci-lint-action@v7
-           continue-on-error: true
+         - name: Build
+           run: cargo build --release --locked
+
+         - name: Audit dependencies
+           uses: rustsec/audit-check@v2
            with:
-              version: latest
+              token: ${{ secrets.GITHUB_TOKEN }}

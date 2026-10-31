@@ -1,17 +1,16 @@
-.PHONY: build run test clean web dev docker-build docker-run docker-shell docker-clean
+.PHONY: build run test clean web dev fmt clippy docker-build docker-run docker-shell docker-clean
 
 BIN          := bin/statesu
-PKG          := ./cmd/statesu
 IMAGE        := statesu
 TAG          := latest
 CONTAINER    := statesu
-VOLUME       := statesu-data
+VOLUME       := statesu-data-rust
 PORT         := 8080
 
 WEB_DIR      := web
 WEB_BUILD    := $(WEB_DIR)/build
 WEB_MODULES  := $(WEB_DIR)/node_modules
-SPA_DIST     := internal/spa/dist
+SPA_DIST     := assets/dist
 
 $(WEB_MODULES): $(WEB_DIR)/package-lock.json
 	cd $(WEB_DIR) && npm ci
@@ -19,27 +18,36 @@ $(WEB_MODULES): $(WEB_DIR)/package-lock.json
 web: $(WEB_MODULES)
 	cd $(WEB_DIR) && npm run build
 	@mkdir -p $(SPA_DIST)
+	@find $(SPA_DIST) -mindepth 1 ! -name .gitkeep -delete
 	@cp -r $(WEB_BUILD)/. $(SPA_DIST)/
 
-# Build the SPA and the Go binary (the SPA is embedded into it).
+# Build the docs and the Rust binary; docs are embedded at compile time.
 build: web
 	@mkdir -p bin
-	go build -o $(BIN) $(PKG)
+	cargo build --release --locked
+	@cp target/release/statesu $(BIN)
 
-# Run the API. The SPA is served from internal/spa/dist; run `make web` first
-# after frontend changes, or use `make dev` for live reload.
+# Run the API. Docs are served from assets/dist; run `make web` after
+# frontend changes, or use `make dev` for the Vite dev server.
 run: web
-	go run $(PKG)
+	cargo run --release --locked
 
-# Frontend dev server with HMR, proxying the API to the Go server.
+# Frontend dev server with HMR, proxying the API to the Rust server.
 dev: $(WEB_MODULES)
 	cd $(WEB_DIR) && npm run dev
 
 test:
-	go test ./...
+	cargo test --all-targets --locked
+
+fmt:
+	cargo fmt --all --check
+
+clippy:
+	cargo clippy --all-targets --locked -- -D warnings
 
 clean:
-	rm -rf bin statesu.db statesu.db-wal statesu.db-shm $(WEB_BUILD) $(WEB_DIR)/.svelte-kit
+	rm -rf bin target $(WEB_BUILD) $(WEB_DIR)/.svelte-kit
+	rm -f db/statesu.db db/statesu.db-wal db/statesu.db-shm
 	find $(SPA_DIST) -mindepth 1 ! -name .gitkeep -delete
 
 docker-build:
@@ -48,7 +56,7 @@ docker-build:
 docker-run: docker-build
 	docker run --rm -it \
 		--name $(CONTAINER) \
-		-p $(PORT):8080 \
+		-p $(PORT):8088 \
 		-v $(VOLUME):/data \
 		--env-file .env \
 		$(IMAGE):$(TAG)
