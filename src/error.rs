@@ -12,9 +12,13 @@ pub enum Error {
     MissingToken,
     InvalidToken,
     TokenExpired,
-    MissingEmail,
     InvalidInput,
-    StateNotFound,
+    /// Authenticated but not permitted: entity limits reached.
+    Forbidden,
+    BlogNotFound,
+    PostNotFound,
+    SlugTaken,
+    DomainTaken,
     PayloadTooLarge,
     UnsupportedMediaType,
     RateLimited {
@@ -81,9 +85,12 @@ impl Error {
             Error::MissingToken => "missing token",
             Error::InvalidToken => "invalid token",
             Error::TokenExpired => "token expired",
-            Error::MissingEmail => "missing email",
             Error::InvalidInput => "invalid input",
-            Error::StateNotFound => "state not found",
+            Error::Forbidden => "forbidden",
+            Error::BlogNotFound => "blog not found",
+            Error::PostNotFound => "post not found",
+            Error::SlugTaken => "slug already in use",
+            Error::DomainTaken => "domain already claimed",
             Error::PayloadTooLarge => "request body too large",
             Error::UnsupportedMediaType => "unsupported media type",
             Error::RateLimited { .. } => "rate limit exceeded",
@@ -100,14 +107,16 @@ impl Error {
             Error::InvalidBody
             | Error::InvalidEmail
             | Error::InvalidPassword
-            | Error::MissingEmail
             | Error::InvalidInput => StatusCode::BAD_REQUEST,
-            Error::UserAlreadyExists => StatusCode::CONFLICT,
+            Error::UserAlreadyExists | Error::SlugTaken | Error::DomainTaken => {
+                StatusCode::CONFLICT
+            }
             Error::InvalidCredentials
             | Error::MissingToken
             | Error::InvalidToken
             | Error::TokenExpired => StatusCode::UNAUTHORIZED,
-            Error::StateNotFound => StatusCode::NOT_FOUND,
+            Error::Forbidden => StatusCode::FORBIDDEN,
+            Error::BlogNotFound | Error::PostNotFound => StatusCode::NOT_FOUND,
             Error::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Error::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Error::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,
@@ -134,9 +143,12 @@ mod tests {
         assert_eq!(Error::MissingToken.message(), "missing token");
         assert_eq!(Error::InvalidToken.message(), "invalid token");
         assert_eq!(Error::TokenExpired.message(), "token expired");
-        assert_eq!(Error::MissingEmail.message(), "missing email");
         assert_eq!(Error::InvalidInput.message(), "invalid input");
-        assert_eq!(Error::StateNotFound.message(), "state not found");
+        assert_eq!(Error::Forbidden.message(), "forbidden");
+        assert_eq!(Error::BlogNotFound.message(), "blog not found");
+        assert_eq!(Error::PostNotFound.message(), "post not found");
+        assert_eq!(Error::SlugTaken.message(), "slug already in use");
+        assert_eq!(Error::DomainTaken.message(), "domain already claimed");
         assert_eq!(Error::PayloadTooLarge.message(), "request body too large");
         assert_eq!(
             Error::UnsupportedMediaType.message(),

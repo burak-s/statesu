@@ -1,8 +1,8 @@
 <script>
 	import Terminal from '#lib/components/Terminal.svelte';
 
-	const title = 'Statesu — Dynamic User Status API';
-	const description = 'An HTTP API for dynamic user statuses. Update your status as it changes, retrieve it as JSON, and display it in your own apps, websites, and integrations.';
+	const title = 'Statesu — a small headless Markdown CMS';
+	const description = 'An HTTP API for Markdown blogs. Create blogs and posts, publish drafts, and read published posts from your own website over a per-blog CORS policy.';
 	const canonicalUrl = 'https://statesu.com/';
 	const structuredData = {
 		'@context': 'https://schema.org',
@@ -16,7 +16,7 @@
 			'@type': 'WebAPI',
 			name: 'Statesu',
 			url: canonicalUrl,
-			description: 'An HTTP API for dynamic user statuses, with public reads for custom clients, apps, websites, and integrations.'
+			description: 'A headless Markdown CMS: authenticated management for blogs, posts, domains and origins, with public JSON reads for your own website.'
 		}
 	};
 
@@ -39,45 +39,48 @@ TOKEN=$(jq -n --arg email "$EMAIL" --arg password "$PASSWORD" \\
     -H 'Content-Type: application/json' --data-binary @- | \\
   jq -er '.token')
 unset PASSWORD`,
-		post: `# Unix seconds + 1 day. Works with GNU and BSD date.
-EXPIRES_AT=$(( $(date +%s) + 86400 ))
-STATE_ID=$(jq -n --arg text 'shipping something small' \\
-  --argjson expires_at "$EXPIRES_AT" \\
-  '{text: $text, expires_at: $expires_at}' | \\
-  curl --fail-with-body -sS "$API/state" \\
+		createBlog: `BLOG_ID=$(jq -n '{name: "Writing desk", slug: "writing-desk"}' | \\
+  curl --fail-with-body -sS "$API/blogs" \\
     -H "Authorization: Bearer $TOKEN" \\
     -H 'Content-Type: application/json' --data-binary @- | \\
-  jq -er '.state_id')`,
-		latest: `curl --fail-with-body -sS -G "$API/state/latest" \\
-  --data-urlencode "email=$EMAIL" | jq .
+  jq -er '.id')`,
+		createPost: `jq -n '{slug: "hello-world", title: "Hello", \\
+  content_markdown: "# Hello\\n\\nFirst post.", \\
+  status: "published"}' | \\
+  curl --fail-with-body -sS "$API/blogs/$BLOG_ID/posts" \\
+    -H "Authorization: Bearer $TOKEN" \\
+    -H 'Content-Type: application/json' --data-binary @- | \\
+  jq -er '.id'`,
+		origins: `# One per line as a JSON array; replace the whole list.
+curl --fail-with-body -sS -X PUT "$API/blogs/$BLOG_ID/origins" \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H 'Content-Type: application/json' \\
+  --data-binary '{"origins":["https://example.com","http://localhost:5173"]}' | jq .`,
+		readPublic: `curl --fail-with-body -sS "$API/public/blogs/writing-desk/posts" | jq .
 
-# Only the text — useful in scripts, status bars and dotfiles.
-curl --fail-with-body -sS -G "$API/state/latest" \\
-  --data-urlencode "email=$EMAIL" | jq -r '.text'
-
-# Omit email to read the latest state from anyone.
-curl --fail-with-body -sS "$API/state/latest" | jq .`,
-		list: `curl --fail-with-body -sS -G "$API/state" \\
-  --data-urlencode "email=$EMAIL" \\
-  --data-urlencode 'page=1' --data-urlencode 'size=20' | jq .`,
-		remove: `curl --fail-with-body -sS -X DELETE "$API/state/$STATE_ID" \\
+# Only the Markdown body of one post — useful in templating.
+curl --fail-with-body -sS "$API/public/blogs/writing-desk/posts/hello-world" \\
+  | jq -r '.content_markdown'`,
+		editPost: `PATCH_BODY=$(jq -n '{content_markdown: "# Hello\\n\\nUpdated text."}')
+curl --fail-with-body -sS -X PATCH "$API/blogs/$BLOG_ID/posts/$POST_ID" \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H 'Content-Type: application/json' --data-binary "$PATCH_BODY" | jq .`,
+		remove: `curl --fail-with-body -sS -X DELETE "$API/blogs/$BLOG_ID/posts/$POST_ID" \\
   -H "Authorization: Bearer $TOKEN"
 # Success: HTTP 204, no response body.`,
 		response: `{
-  "state_id": "0192f3a4-5b6c-7d8e-9f01-23456789abcd",
-  "user_id": "0192f3a4-5b6c-7d8e-9f01-0123456789ab",
-  "email": "you@example.com",
-  "text": "shipping something small",
-  "created_at": 1760000000,
-  "expires_at": 1760086400
+  "slug": "hello-world",
+  "title": "Hello",
+  "content_markdown": "# Hello\\n\\nFirst post.",
+  "published_at": 1760000000
 }`,
 		display: `const response = await fetch(
-  'https://statesu.com/state/latest?email=' + encodeURIComponent(email)
+  'https://statesu.com/public/blogs/writing-desk/posts/hello-world'
 );
-if (!response.ok) throw new Error('Could not fetch status');
-const state = await response.json();
-document.querySelector('#status').textContent = state.text;`,
-		error: `{"error":"token expired"}`
+if (!response.ok) throw new Error('Could not fetch post');
+const post = await response.json();
+document.querySelector('#title').textContent = post.title;
+// Markdown is rendered by your own renderer — keep raw HTML disabled.`
 	};
 	const wgetAuth = (path) => `# Bash: prompt without saving your password in shell history.
 read -r -s -p 'Password: ' PASSWORD; printf '\\n'
@@ -89,38 +92,46 @@ unset PASSWORD BODY`;
 	const wgetExamples = {
 		register: wgetAuth('/auth/register'),
 		login: wgetAuth('/auth/login'),
-		post: `# Unix seconds + 1 day. Works with GNU and BSD date.
-EXPIRES_AT=$(( $(date +%s) + 86400 ))
-BODY=$(jq -n --arg text 'shipping something small' \\
-  --argjson expires_at "$EXPIRES_AT" \\
-  '{text: $text, expires_at: $expires_at}')
-STATE_ID=$(wget -O- --header="Authorization: Bearer $TOKEN" \\
+		createBlog: `BODY=$(jq -n '{name: "Writing desk", slug: "writing-desk"}')
+BLOG_ID=$(wget -O- --header="Authorization: Bearer $TOKEN" \\
   --header='Content-Type: application/json' \\
-  --post-data="$BODY" "$API/state" | jq -er '.state_id')`,
-		latest: `# Encode the email before adding it to the URL.
-ENCODED_EMAIL=$(printf '%s' "$EMAIL" | jq -sRr @uri)
-wget -O- "$API/state/latest?email=$ENCODED_EMAIL" | jq .
+  --post-data="$BODY" "$API/blogs" | jq -er '.id')`,
+		createPost: `BODY=$(jq -n '{slug: "hello-world", title: "Hello", \\
+  content_markdown: "# Hello", status: "published"}')
+POST_ID=$(wget -O- --header="Authorization: Bearer $TOKEN" \\
+  --header='Content-Type: application/json' \\
+  --post-data="$BODY" "$API/blogs/$BLOG_ID/posts" | jq -er '.id')`,
+		origins: `BODY='{"origins":["https://example.com"]}'
+wget -O- --method=PUT "$API/blogs/$BLOG_ID/origins" \\
+  --header="Authorization: Bearer $TOKEN" \\
+  --header='Content-Type: application/json' \\
+  --post-data="$BODY" | jq .`,
+		readPublic: `wget -O- "$API/public/blogs/writing-desk/posts" | jq .
 
-# Only the text — useful in scripts, status bars and dotfiles.
-wget -O- "$API/state/latest?email=$ENCODED_EMAIL" | jq -r '.text'
-
-# Omit email to read the latest state from anyone.
-wget -O- "$API/state/latest" | jq .`,
-		list: `ENCODED_EMAIL=$(printf '%s' "$EMAIL" | jq -sRr @uri)
-wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
-		remove: `wget -O- --method=DELETE "$API/state/$STATE_ID" \\
+# One post only — its Markdown body.
+wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
+  | jq -r '.content_markdown'`,
+		remove: `wget -O- --method=DELETE "$API/blogs/$BLOG_ID/posts/$POST_ID" \\
   --header="Authorization: Bearer $TOKEN"
 # Success: HTTP 204, no response body.`
 	};
 	const endpoints = [
-		['POST', '/auth/register', 'No', 'Create an account; returns id, email, token and expires_at. 201.'],
-		['POST', '/auth/login', 'No', 'Authenticate with email and password; returns the same token fields. 200.'],
+		['POST', '/auth/register', 'No', 'Create an account; returns token and expires_at. 201.'],
+		['POST', '/auth/login', 'No', 'Authenticate; returns the same token fields. 200.'],
 		['POST', '/auth/logout', 'No', 'Clear any legacy auth cookie. Returns 204; bearer tokens remain valid until expiry.'],
 		['GET', '/auth/me', 'Bearer', 'Check your token; returns id and email. 200.'],
-		['POST', '/state', 'Bearer', 'Body: text and expires_at. Returns the new state. 201.'],
-		['GET', '/state?email=…', 'No', 'Required email; optional page and size. Returns items, page, size and total. 200.'],
-		['GET', '/state/latest', 'No', 'Optional email filter. Returns a state with its owner’s email. 200.'],
-		['DELETE', '/state/{stateID}', 'Bearer', 'Delete your own state. No response body. 204.']
+		['POST', '/blogs', 'Bearer', 'Create a blog: name, slug, optional domain. 201.'],
+		['GET', '/blogs', 'Bearer', 'List your blogs, newest first. 200.'],
+		['PATCH', '/blogs/{blogID}', 'Bearer', 'Rename or change/clear the domain. 200.'],
+		['PUT', '/blogs/{blogID}/origins', 'Bearer', 'Replace the exact browser origins allowed to call delivery. 200.'],
+		['POST', '/blogs/{blogID}/posts', 'Bearer', 'Create a post: slug, title, content_markdown, optional status. 201.'],
+		['GET', '/blogs/{blogID}/posts', 'Bearer', 'List your posts, newest first; page and size. 200.'],
+		['GET', '/blogs/{blogID}/posts/{postID}', 'Bearer', 'Read one of your posts. 200.'],
+		['PATCH', '/blogs/{blogID}/posts/{postID}', 'Bearer', 'Edit fields or toggle draft/published. 200.'],
+		['DELETE', '/blogs/{blogID}/posts/{postID}', 'Bearer', 'Soft-delete a post; its slug stays reserved. 204.'],
+		['GET', '/public/blogs/{blogSlug}', 'No', 'Public blog profile: name, slug, domain. 200.'],
+		['GET', '/public/blogs/{blogSlug}/posts', 'No', 'Published posts only, newest first; page and size. 200.'],
+		['GET', '/public/blogs/{blogSlug}/posts/{postSlug}', 'No', 'One published post with its Markdown. 200.']
 	];
 </script>
 
@@ -144,66 +155,67 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 	<a class="brand" href="/">Statesu</a>
 	<nav aria-label="Documentation">
 		<a href="#quickstart">Quick start</a>
-		<a href="#manage">Manage states</a>
+		<a href="#delivery">Delivery & CORS</a>
 		<a href="#reference">API reference</a>
+		<a href="/dashboard">Dashboard</a>
 		<a href="https://github.com/burak-s/statesu" target="_blank" rel="noopener noreferrer">GitHub</a>
 	</nav>
 </header>
 
 <main>
 	<section class="intro">
-		<p class="eyebrow">Dynamic user statuses over HTTP.</p>
-		<h1>Your status.<br />Wherever you want it.</h1>
-		<p class="lead">An API for dynamic user statuses. Update your status as it changes and retrieve it wherever you want to display it.</p>
-		<p>Call the API from your terminal, write your own client, or integrate it into an app. Statesu stores your updates and returns them as JSON; you decide how to publish and display them.</p>
-		<p>Each status update is called a state. Fetch a user's latest state to show their current status on a website, in an app, or in any other interface you build.</p>
+		<p class="eyebrow">A small headless Markdown CMS.</p>
+		<h1>Write in Markdown.<br />Publish to your site.</h1>
+		<p class="lead">Blogs, drafts and published posts behind one API. Your website stays yours: read published posts as JSON and render them however you like.</p>
+		<p>Manage posts from the <a href="/dashboard">dashboard</a> or the API below. Posts can be drafts while you work, then published with one call. Drafts, withdrawn and deleted posts never appear through delivery routes.</p>
 	</section>
 
 	<section id="quickstart">
 		<h2>Get started with the API</h2>
-		<p>The examples below use curl or wget, but the same endpoints work with any HTTP client. For these examples, you'll need Bash, <a href="https://jqlang.org/">jq</a>, and either curl 7.76+ or GNU wget 1.15+. Select your HTTP client in each example; jq builds and reads the JSON. Run all commands in the same shell so your variables stay available, and replace <code>you@example.com</code> with your email address.</p>
+		<p>The examples use curl or wget, but the same endpoints work with any HTTP client. You need Bash, <a href="https://jqlang.org/">jq</a>, and either curl 7.76+ or GNU wget 1.15+; switch clients in each example. Run all commands in the same shell so your variables stay available.</p>
 		<Terminal code={examples.setup} />
 
 		<h3>01 / Create an account</h3>
-		<p>Register once. Use a password of 8–72 bytes with at least one letter and one digit. The response includes a bearer token; the command below stores it in <code>TOKEN</code>. Authentication is bearer-only: the API never issues or accepts session cookies.</p>
+		<p>Register once: 8–72 byte passwords with at least one letter and one digit. Authentication is bearer-only — the API never issues or accepts session cookies. Treat the token like a password.</p>
 		<Terminal variants={{ curl: examples.register, wget: wgetExamples.register }} />
-		<p>If a command fails, stop and resolve the error before continuing. Treat the token like a password: don't commit it, paste it into public logs, or share it.</p>
 
-		<h3>02 / Publish a state</h3>
-		<p>Send your status text and an expiration timestamp. This example sets the expiration to one day from now and saves the state ID for deletion later. Expiration does not automatically hide or delete the state.</p>
-		<Terminal variants={{ curl: examples.post, wget: wgetExamples.post }} />
-		<p>Text is trimmed, must not be empty, and has a 4096-byte limit. The entire <code>POST /state</code> JSON body must be at most 32 KiB (32,768 bytes), including whitespace and JSON escapes. <code>expires_at</code> is required: Unix seconds, in the future, at most 30 days away. It is not a duration or a millisecond timestamp.</p>
-		<p>IDs are UUIDv7, and <code>created_at</code>/<code>expires_at</code> are Unix seconds. Send <code>Content-Type: application/json</code>; missing or unsupported content types are rejected.</p>
+		<h3>02 / Create a blog</h3>
+		<p>A blog holds posts and its own delivery rules. The slug becomes the public URL path; the domain is optional metadata. A user owns up to 20 blogs.</p>
+		<Terminal variants={{ curl: examples.createBlog, wget: wgetExamples.createBlog }} />
 
-		<h3>03 / Display it anywhere</h3>
-		<p>Fetch your latest state by email and use the <code>text</code> field wherever you want to show your status. Your client controls the display and when to fetch updates. Reading is public and needs no token. Always URL-encode email query parameters, especially addresses containing <code>+</code>.</p>
-		<Terminal variants={{ curl: examples.latest, wget: wgetExamples.latest }} />
-		<p>The latest-state endpoint returns JSON like this. The IDs and timestamps below are examples.</p>
+		<h3>03 / Write a post</h3>
+		<p>Markdown is stored as the canonical content: a leading byte-order mark is stripped, line endings are normalized to LF, and control characters (NUL, other C0/C1, DEL) are rejected. Slug rules: lowercase letters, digits and hyphens, at most 63 bytes; titles are single-line printable text up to 256 bytes; Markdown up to 256 KiB. Omit <code>status</code> to create a draft, or set it to <code>published</code> to publish immediately.</p>
+		<Terminal variants={{ curl: examples.createPost, wget: wgetExamples.createPost }} />
+
+		<h3>04 / Choose who can read it</h3>
+		<p>Delivery routes are public JSON reads of published posts. Drafts stay private. Browser access is scoped per blog: record the exact origins of your website, and only those origins receive the CORS header. No suffix matching, no reflected origins, no credentials.</p>
+		<Terminal variants={{ curl: examples.origins, wget: wgetExamples.origins }} />
+
+		<h3>05 / Read it from your website</h3>
+		<p>Reads return JSON with your Markdown. Listing and reading are always newest-first per blog, page or size capped at 100. Unknown blogs and posts return 404.</p>
+		<Terminal variants={{ curl: examples.readPublic, wget: wgetExamples.readPublic }} />
+		<p>A published post looks like this; management-only fields (<code>status</code>, owner IDs) never appear here.</p>
 		<Terminal code={examples.response} language="json" />
-		<h3 id="safe-rendering">Security / Safe status rendering</h3>
-		<p><strong>Render as plain text:</strong> status text is untrusted user input, not sanitized HTML. Tags and scripts are preserved as literal text. In browsers, assign it to <code>textContent</code>, as below; in Svelte, use normal text interpolation. Never pass it to <code>innerHTML</code>, raw HTML rendering, or a Markdown renderer that allows raw HTML. JSON escaping does not make decoded text safe to render as HTML.</p>
+
+		<h3 id="safe-rendering">Security / Rendering Markdown safely</h3>
+		<p><strong>Render as plain or sanitized text:</strong> <code>content_markdown</code> is untrusted user input, delivered verbatim. Render it with a Markdown renderer you trust and keep raw HTML disabled or the output sanitized. In browsers, assign titles and slugs to <code>textContent</code>; never pass API fields to <code>innerHTML</code> unescaped.</p>
 		<Terminal code={examples.display} language="javascript" />
-		<p><strong>Public by design:</strong> anyone can read states, and the latest-state response includes the owner's email. Don't post secrets. Expiration is metadata: the current read endpoints still return expired states. Check <code>expires_at</code> in your client if you only want active states.</p>
 	</section>
 
-	<section id="manage">
-		<h2>Manage your status updates</h2>
-		<h3>Get a fresh token</h3>
-		<p>Already registered? Use login instead. Authentication responses include the token's expiration time in <code>expires_at</code>. When a token expires, log in again.</p>
-		<Terminal variants={{ curl: examples.login, wget: wgetExamples.login }} />
-		<h3>List your states</h3>
-		<p>States are returned newest first. Page numbering starts at 1; the default size is 20 and the maximum is 100. An unknown email returns an empty list. Malformed or non-positive <code>page</code> and <code>size</code> values return 400.</p>
-		<Terminal variants={{ curl: examples.list, wget: wgetExamples.list }} />
-		<h3>Delete a state</h3>
-		<p>Use the <code>STATE_ID</code> saved when publishing, or a <code>state_id</code> from your history. Only the owner can delete a state.</p>
-		<Terminal variants={{ curl: examples.remove, wget: wgetExamples.remove }} />
+	<section id="delivery">
+		<h2>Delivery and CORS, precisely scoped</h2>
+		<h3>Which origins are allowed</h3>
+		<p><code>PUT /blogs/{'{blogID}'}/origins</code> replaces the whole list. Origins are normalized to <code>scheme://host[:port]</code> and compared exactly — one origin per line, no paths, queries or credentials. Hosts are strict RFC 1123 names (ASCII labels, punycode <code>xn--</code> for international domains, IPv4-like names, or bracketed IPv6 literals like <code>[::1]:5173</code>); ports must be 1–65535. Production and localhost preview coexist in the same list; up to 32 origins per blog.</p>
+		<h3>What CORS does and does not do</h3>
+		<p>CORS governs the browser only. <code>curl</code>, scrapers and server-to-server calls can read public posts regardless of the origin list — that is the point of published content; keep secrets out of posts, and never put an API token in code that runs on your website.</p>
+		<h3>Drafts, withdrawal and deletion</h3>
+		<p>Publishing sets <code>published_at</code>; withdrawing clears it and the post stops being delivered. Deleting soft-deletes the post immediately in every listing, while reserving its slug so old URLs never silently point at new content.</p>
 	</section>
-
 
 	<section id="reference">
 		<h2>API reference</h2>
-		<p>Base URL: <code>https://statesu.com</code>. Request and response bodies are JSON. Status <code>text</code> is untrusted plain text; see <a href="#safe-rendering">safe status rendering</a> before displaying it. Send <code>Content-Type: application/json</code> for JSON bodies and <code>Authorization: Bearer $TOKEN</code> for authenticated requests. Auth is bearer-only; do not send the token in a cookie.</p>
-		<p>Auth and write requests are rate-limited per client IP. Exceeding a limit returns 429 with a <code>Retry-After</code> header. Public reads have a separate, larger limit.</p>
+		<p>Base URL: <code>https://statesu.com</code>. Bodies are JSON; send <code>Content-Type: application/json</code> for JSON bodies and <code>Authorization: Bearer $TOKEN</code> for authenticated requests. Auth is bearer-only; do not send the token in a cookie. <code>GET /blogs</code> and blog settings require the blog to belong to you; unknown and foreign resources both return 404.</p>
+		<p>Requests are rate-limited per client IP. Exceeding a limit returns 429 with a <code>Retry-After</code> header; public delivery reads have a separate, larger limit.</p>
 		<div class="table-scroll">
 			<table>
 				<thead><tr><th>Method / endpoint</th><th>Auth</th><th>Behavior</th></tr></thead>
@@ -214,23 +226,30 @@ wget -O- "$API/state?email=$ENCODED_EMAIL&page=1&size=20" | jq .`,
 				</tbody>
 			</table>
 		</div>
+		<h3>Edit and manage posts</h3>
+		<p>Use the post ID saved when creating, or <code>id</code> from a listing. Editing a published post changes it live; there is no revision history yet.</p>
+		<Terminal variants={{ curl: examples.editPost, wget: wgetExamples.remove }} />
+		<h3>Delete a post</h3>
+		<Terminal variants={{ curl: examples.remove, wget: wgetExamples.remove }} />
 		<h3>Error responses and HTTP status codes</h3>
-		<Terminal code={examples.error} language="json" />
+		<Terminal code={'{"error":"slug already in use"}'} language="json" />
 		<ul>
-			<li><strong>400</strong> — invalid JSON or unknown fields, invalid email/password format, missing email, or invalid text / expiration / pagination.</li>
-			<li><strong>401</strong> — incorrect login credentials, or a missing, invalid or expired token.</li>
-			<li><strong>404</strong> — no latest state, or the state to delete doesn't exist / isn't yours.</li>
-			<li><strong>409</strong> — an account with that email already exists; log in instead.</li>
-			<li><strong>413</strong> — the request body is too large: 32 KiB for <code>POST /state</code>, 16 KiB for auth bodies.</li>
+			<li><strong>400</strong> — invalid JSON, unknown fields, malformed emails/passwords, invalid slugs, titles, content or pagination.</li>
+			<li><strong>401</strong> — incorrect credentials, or a missing, invalid or expired token.</li>
+			<li><strong>403</strong> — a limit is reached, such as the per-user blog quota.</li>
+			<li><strong>404</strong> — unknown or foreign blog or post; drafts are also invisible through public routes.</li>
+			<li><strong>409</strong> — a duplicate slug or domain, an already-registered email, or a <code>(blog, slug)</code> post conflict.</li>
+			<li><strong>413</strong> — the body is too large: 256 KiB for blog and post bodies, 16 KiB for auth.</li>
 			<li><strong>415</strong> — the body is not <code>application/json</code>.</li>
-			<li><strong>429</strong> — rate limit exceeded; inspect <code>Retry-After</code> and retry later.</li>
+			<li><strong>429</strong> — rate limit exceeded; honor <code>Retry-After</code>.</li>
 			<li><strong>500</strong> — server error; retry later.</li>
 		</ul>
-		<p><code>curl --fail-with-body</code> preserves the error body and exits nonzero on HTTP errors. Use curl's <code>-i</code> or wget's <code>--server-response</code> to inspect HTTP status and headers. wget also exits nonzero on HTTP errors. Logout clears a legacy cookie only; it does not revoke a bearer token, so discard the token locally. Clear your shell token when finished: <code>unset TOKEN</code>.</p>
+		<p><code>curl --fail-with-body</code> preserves the error body and exits nonzero on HTTP errors. Logout clears a legacy cookie only and does not revoke a bearer token — discard the token locally: <code>unset TOKEN</code>.</p>
 	</section>
 </main>
 
 <footer>
-	<span>Statesu — dynamic user status API. <a href="https://github.com/burak-s/statesu" target="_blank" rel="noopener noreferrer">GitHub</a></span>
+	<span>Statesu — a small headless Markdown CMS. <a href="https://github.com/burak-s/statesu" target="_blank" rel="noopener noreferrer">GitHub</a></span>
+	<a href="/dashboard">Dashboard</a>
 	<a href="#quickstart">Back to quick start ↑</a>
 </footer>

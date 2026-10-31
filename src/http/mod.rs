@@ -7,7 +7,7 @@ use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, patch, post, put};
 use tokio::sync::Semaphore;
 
 use crate::config::Config;
@@ -16,11 +16,13 @@ use crate::http::rate_limit::RateLimiter;
 use crate::http::static_files::fallback as docs_fallback;
 
 pub mod auth;
+pub mod blog;
 pub mod client_ip;
 pub mod error;
 pub mod json_body;
+pub mod post;
+pub mod public;
 pub mod rate_limit;
-pub mod state;
 pub mod static_files;
 
 pub use json_body::StrictJson;
@@ -30,7 +32,8 @@ pub use json_body::StrictJson;
 pub struct AppState {
     pub config: Config,
     pub auth_service: crate::auth::service::AuthService,
-    pub states: crate::state::service::StateService,
+    pub blogs: crate::blog::service::BlogService,
+    pub posts: crate::post::service::PostService,
     pub assets: Arc<dyn static_files::StaticAssets>,
     pub limiters: Limiters,
     pub concurrency_gate: Arc<Semaphore>,
@@ -51,23 +54,36 @@ pub struct Limiters {
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// JSON body limits: auth endpoints accept 16 KiB, state creation 32 KiB.
+/// JSON body limits: auth endpoints accept 16 KiB, blog/post endpoints
+/// accept 256 KiB so imported Markdown files fit.
 const AUTH_BODY_LIMIT: usize = 16 * 1024;
-const STATE_BODY_LIMIT: usize = 32 * 1024;
+const CMS_BODY_LIMIT: usize = 256 * 1024;
 
 const X_FORWARDED_FOR: &str = "x-forwarded-for";
 
-/// Assembles the production router: API routes guarded by CORS + rate limits,
-/// plus an embedded docs fallback returning 404/405.
+/// Assembles the production router: auth + management routes guarded by CORS
+/// and rate limits, public delivery routes with per-blog origins, plus an
+/// embedded docs fallback returning 404/405.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
-        .route("/state", get(state::list).post(state::create))
-        .route("/state/latest", get(state::latest))
-        .route("/state/{state_id}", delete(state::delete))
+        .route("/blogs", post(blog::create).get(blog::list))
+        .route("/blogs/{blog_id}", patch(blog::update))
+        .route("/blogs/{blog_id}/origins", put(blog::set_origins))
+        .route("/blogs/{blog_id}/posts", post(post::create).get(post::list))
+        .route(
+            "/blogs/{blog_id}/posts/{post_id}",
+            get(post::get).patch(post::update).delete(post::delete),
+        )
+        .route("/public/blogs/{blog_slug}", get(public::blog))
+        .route("/public/blogs/{blog_slug}/posts", get(public::posts))
+        .route(
+            "/public/blogs/{blog_slug}/posts/{post_slug}",
+            get(public::post),
+        )
         // Onion order (outermost last): concurrency, guard, then request core.
         .layer(middleware::from_fn_with_state(state.clone(), request_core))
         .layer(middleware::from_fn_with_state(state.clone(), request_guard))
@@ -97,19 +113,58 @@ pub async fn concurrency_gate(
 }
 
 /// CORS + rate limiting + cache-control: covers API responses and preflights.
+///
+/// Borrowed values cross no `await`: `http::Request` is not `Sync`, so the
+/// request is only inspected before the first await; method, path, origin and
+/// any per-blog origins are owned afterwards.
 pub async fn request_guard(
     State(state): State<AppState>,
     request: Request,
     next: Next,
 ) -> Response {
-    if let Some(preflight) = preflight_response(&state, &request) {
-        return preflight;
-    }
-
-    let class = RouteClass::for_request(&request);
-    let client = request_client_ip(&state, &request);
+    let method = request.method().clone();
+    let path = request.uri().path().to_owned();
+    let access_control_method = if method == Method::OPTIONS {
+        request
+            .headers()
+            .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| Method::from_bytes(value.as_bytes()).ok())
+    } else {
+        None
+    };
+    let is_preflight = method == Method::OPTIONS && access_control_method.is_some();
+    let class = if is_preflight {
+        class_for_method(
+            access_control_method.as_ref().unwrap_or(&Method::GET),
+            &path,
+        )
+    } else {
+        class_for_method(&method, &path)
+    };
     let origin = request.headers().get(header::ORIGIN).cloned();
+    let client = request_client_ip(&state, &request);
     let has_authorization = request.headers().contains_key(header::AUTHORIZATION);
+
+    // Delivery CORS is scoped to the blog in the path: only origins the blog
+    // owner recorded may call it from a browser.
+    let public_origins = if class == RouteClass::PublicDelivery {
+        public_blog_origins(&state, &path).await
+    } else {
+        Vec::new()
+    };
+
+    // Preflight short-circuit: OPTIONS with Origin and an
+    // Access-Control-Request-Method is answered here.
+    if is_preflight && let Some(origin) = origin {
+        let mut response = StatusCode::NO_CONTENT.into_response();
+        if class == RouteClass::PublicDelivery {
+            apply_public_cors(public_origins, Some(&origin), &mut response, true);
+        } else {
+            apply_cors(&state, Some(&origin), &mut response, true);
+        }
+        return response;
+    }
 
     let limiter = match class {
         RouteClass::SensitiveAuth => &state.limiters.auth,
@@ -119,7 +174,11 @@ pub async fn request_guard(
         Ok(()) => next.run(request).await,
         Err(retry_after_secs) => Error::RateLimited { retry_after_secs }.into_response(),
     };
-    apply_cors(&state, class, origin.as_ref(), &mut response, false);
+    if class == RouteClass::PublicDelivery {
+        apply_public_cors(public_origins, origin.as_ref(), &mut response, false);
+    } else {
+        apply_cors(&state, origin.as_ref(), &mut response, false);
+    }
     add_response_headers(&mut response, class, has_authorization);
     response
 }
@@ -143,14 +202,17 @@ pub async fn request_core(request: Request, next: Next) -> Response {
 }
 
 fn body_limit_for(method: &Method, path: &str) -> Option<usize> {
-    if method == Method::POST {
-        Some(if path == "/state" {
-            STATE_BODY_LIMIT
-        } else {
-            AUTH_BODY_LIMIT
-        })
-    } else {
-        None
+    match *method {
+        Method::POST | Method::PATCH | Method::PUT => {
+            if path == "/auth/register" || path == "/auth/login" {
+                Some(AUTH_BODY_LIMIT)
+            } else if path.starts_with("/blogs") {
+                Some(CMS_BODY_LIMIT)
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -165,35 +227,18 @@ fn limit_body(request: Request, limit: usize) -> Request {
 /// Route behavior classes decided from method + path before authentication.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RouteClass {
-    /// GET state reads: any origin may call them cross-origin, no credentials.
-    PublicReads,
+    /// Public delivery reads; CORS is scoped to the blog's recorded origins.
+    PublicDelivery,
     /// register/login: CORS allowlist plus a tight quota.
     SensitiveAuth,
-    /// Other auth routes and writes: CORS allowlist, general quota.
+    /// Other auth routes and management writes: CORS allowlist, general quota.
     Restricted,
-}
-
-impl RouteClass {
-    fn for_request(request: &Request) -> RouteClass {
-        if request.method() == Method::OPTIONS {
-            return class_for_access_control_method(
-                request
-                    .headers()
-                    .get(header::ACCESS_CONTROL_REQUEST_METHOD)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| Method::from_bytes(value.as_bytes()).ok())
-                    .as_ref(),
-                request.uri().path(),
-            );
-        }
-        class_for_method(request.method(), request.uri().path())
-    }
 }
 
 fn class_for_method(method: &Method, path: &str) -> RouteClass {
     let is_read = method == Method::GET || method == Method::HEAD;
-    if is_read && matches!(path, "/state" | "/state/latest") {
-        RouteClass::PublicReads
+    if is_read && path.starts_with("/public/") {
+        RouteClass::PublicDelivery
     } else if matches!(path, "/auth/register" | "/auth/login") {
         RouteClass::SensitiveAuth
     } else {
@@ -201,35 +246,11 @@ fn class_for_method(method: &Method, path: &str) -> RouteClass {
     }
 }
 
-fn class_for_access_control_method(method: Option<&Method>, path: &str) -> RouteClass {
-    class_for_method(method.unwrap_or(&Method::GET), path)
-}
-
-/// Preflight short-circuit: OPTIONS with Origin and an
-/// Access-Control-Request-Method is answered here.
-fn preflight_response(state: &AppState, request: &Request) -> Option<Response> {
-    if request.method() != Method::OPTIONS {
-        return None;
-    }
-    let origin = request.headers().get(header::ORIGIN)?;
-    if !request
-        .headers()
-        .contains_key(header::ACCESS_CONTROL_REQUEST_METHOD)
-    {
-        return None;
-    }
-    let class = RouteClass::for_request(request);
-    let mut response = StatusCode::NO_CONTENT.into_response();
-    apply_cors(state, class, Some(origin), &mut response, true);
-    Some(response)
-}
-
-/// Applies the CORS policy. Public reads are open to any origin without
-/// credentials; auth/write routes require an exact allowlist match. Credentialed
-/// CORS is deliberately never enabled.
+/// Applies the CORS policy for management and auth routes. These require an
+/// exact allowlist match against the configured dashboard origins.
+/// Credentialed CORS is deliberately never enabled.
 fn apply_cors(
     state: &AppState,
-    class: RouteClass,
     origin: Option<&HeaderValue>,
     response: &mut Response,
     preflight: bool,
@@ -237,48 +258,81 @@ fn apply_cors(
     let Some(origin) = origin else {
         return;
     };
-    let headers = response.headers_mut();
-    let allowed = match class {
-        RouteClass::PublicReads => {
-            headers.insert(
-                header::ACCESS_CONTROL_ALLOW_ORIGIN,
-                HeaderValue::from_static("*"),
-            );
-            true
-        }
-        _ => {
-            let Ok(origin_str) = origin.to_str() else {
-                return;
-            };
-            if !state
-                .config
-                .allowed_origins
-                .iter()
-                .any(|allowed| allowed == origin_str)
-            {
-                return;
-            }
-            headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
-            headers.append(header::VARY, HeaderValue::from_static("Origin"));
-            true
-        }
+    let Ok(origin_str) = origin.to_str() else {
+        return;
     };
-    if !allowed || !preflight {
+    if !state
+        .config
+        .allowed_origins
+        .iter()
+        .any(|allowed| allowed == origin_str)
+    {
         return;
     }
-    // Preflight response headers are only useful when the origin was allowed.
-    let methods = match class {
-        RouteClass::PublicReads => "GET, HEAD",
-        _ => "GET, HEAD, POST, DELETE",
-    };
-    headers.insert(
-        header::ACCESS_CONTROL_ALLOW_METHODS,
-        HeaderValue::from_str(methods).unwrap_or_else(|_| HeaderValue::from_static("GET")),
-    );
-    if class != RouteClass::PublicReads {
+    let headers = response.headers_mut();
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
+    headers.append(header::VARY, HeaderValue::from_static("Origin"));
+    if preflight {
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, HEAD, POST, DELETE, PATCH, PUT"),
+        );
         headers.insert(
             header::ACCESS_CONTROL_ALLOW_HEADERS,
             HeaderValue::from_static("Authorization, Content-Type"),
+        );
+        headers.insert(
+            header::ACCESS_CONTROL_MAX_AGE,
+            HeaderValue::from_static("600"),
+        );
+    }
+}
+
+/// Exact origins recorded for the blog named in a `/public/blogs/{slug}`
+/// path; unknown blogs read as empty so no origin ever matches.
+async fn public_blog_origins(state: &AppState, path: &str) -> Vec<String> {
+    let slug = public_blog_slug(path);
+    match slug {
+        Some(slug) => state.blogs.origins_for_slug(slug).await.unwrap_or_default(),
+        None => Vec::new(),
+    }
+}
+
+/// `/public/blogs/{blog_slug}` optionally followed by `/posts/...`; returns
+/// the slug segment when the path has that shape.
+fn public_blog_slug(path: &str) -> Option<&str> {
+    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+    if segments.next() != Some("public") || segments.next() != Some("blogs") {
+        return None;
+    }
+    segments.next()
+}
+
+/// Applies per-blog delivery CORS. Origins must match exactly; responses
+/// always advertise `Vary: Origin` so shared caches never reuse a decision
+/// made for another origin.
+fn apply_public_cors(
+    allowed_origins: Vec<String>,
+    origin: Option<&HeaderValue>,
+    response: &mut Response,
+    preflight: bool,
+) {
+    let headers = response.headers_mut();
+    headers.append(header::VARY, HeaderValue::from_static("Origin"));
+    let Some(origin) = origin else {
+        return;
+    };
+    let Ok(origin_str) = origin.to_str() else {
+        return;
+    };
+    if !allowed_origins.iter().any(|allowed| allowed == origin_str) {
+        return;
+    }
+    headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin.clone());
+    if preflight {
+        headers.insert(
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            HeaderValue::from_static("GET, HEAD"),
         );
         headers.insert(
             header::ACCESS_CONTROL_MAX_AGE,
@@ -294,7 +348,7 @@ fn add_response_headers(response: &mut Response, class: RouteClass, has_authoriz
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
-    let auth_surface = class != RouteClass::PublicReads || has_authorization;
+    let auth_surface = class != RouteClass::PublicDelivery || has_authorization;
     if auth_surface {
         headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     }
@@ -307,8 +361,8 @@ fn request_client_ip(state: &AppState, request: &Request) -> IpAddr {
     let peer = request
         .extensions()
         .get::<ConnectInfo<std::net::SocketAddr>>()
-        .map(|info| info.0.ip())
-        .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+        .map(|connect| connect.0.ip())
+        .unwrap_or(std::net::Ipv4Addr::UNSPECIFIED.into());
     let forwarded = request
         .headers()
         .get(X_FORWARDED_FOR)

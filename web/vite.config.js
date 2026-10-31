@@ -21,7 +21,8 @@ export default defineConfig({
 	server: {
 		proxy: {
 			'/auth': apiTarget,
-			'/state': apiTarget
+			'/blogs': apiTarget,
+			'/public': apiTarget
 		}
 	}
 });

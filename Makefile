@@ -1,4 +1,4 @@
-.PHONY: build run test clean web dev fmt clippy docker-build docker-run docker-shell docker-clean
+.PHONY: build run api dev test clean web fmt clippy docker-build docker-run docker-shell docker-clean
 
 BIN          := bin/statesu
 IMAGE        := statesu
@@ -11,6 +11,11 @@ WEB_DIR      := web
 WEB_BUILD    := $(WEB_DIR)/build
 WEB_MODULES  := $(WEB_DIR)/node_modules
 SPA_DIST     := assets/dist
+
+# Full-stack dev ports: the API binds to the loopback interface only, and the
+# Vite dev server proxies /auth, /blogs and /public to it.
+API_PORT   ?= 8080
+VITE_PORT  ?= 5173
 
 $(WEB_MODULES): $(WEB_DIR)/package-lock.json
 	cd $(WEB_DIR) && npm ci
@@ -27,14 +32,34 @@ build: web
 	cargo build --release --locked
 	@cp target/release/statesu $(BIN)
 
-# Run the API. Docs are served from assets/dist; run `make web` after
-# frontend changes, or use `make dev` for the Vite dev server.
+# Run the API with the embedded docs from assets/dist; running `web` first
+# refreshes the docs, or use `make dev` for the HMR workflow.
 run: web
 	cargo run --release --locked
 
-# Frontend dev server with HMR, proxying the API to the Rust server.
+# Backend-only runner: starts the API directly without touching the docs
+# build, so repeated runs stay fast.
+api:
+	cargo run --release --locked
+
+# Full-stack development: Rust API in the background plus the Vite dev server
+# with HMR proxying /auth, /blogs and /public. Ctrl+C or an exit stops both.
+# .env is exported so required keys are always loaded (same as docker-run).
 dev: $(WEB_MODULES)
-	cd $(WEB_DIR) && npm run dev
+	@bash -c ' \
+		set -a; if test -f .env; then . ./.env; fi; set +a; \
+		STATESU_ADDR=127.0.0.1:$(API_PORT) cargo run --release --locked & \
+		API_PID=$$!; \
+		trap "kill $$API_PID 2>/dev/null" EXIT; \
+		printf "waiting for the API"; \
+		until curl -s -o /dev/null http://127.0.0.1:$(API_PORT)/public/blogs/dev-ready; do \
+			if ! kill -0 $$API_PID 2>/dev/null; then \
+				echo; echo "the API exited during startup; see its output above"; exit 1; \
+			fi; \
+			printf "."; sleep 0.5; \
+		done; \
+		echo " ready"; \
+		cd $(WEB_DIR) && STATESU_API=http://127.0.0.1:$(API_PORT) npm run dev -- --port $(VITE_PORT)'
 
 test:
 	cargo test --all-targets --locked

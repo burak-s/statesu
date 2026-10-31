@@ -7,6 +7,8 @@ use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, S
 
 use crate::auth::repo::UserRepository;
 use crate::auth::service::AuthService;
+use crate::blog::repo::BlogRepository;
+use crate::blog::service::BlogService;
 use crate::clock::Clock;
 use crate::config::{Config, POOL_ACQUIRE_TIMEOUT};
 use crate::crypto::email::EmailCipher;
@@ -16,8 +18,8 @@ use crate::error::{Error, InternalError};
 use crate::http::rate_limit::RateLimiter;
 use crate::http::static_files::StaticAssets;
 use crate::http::{AppState, Limiters, build_router};
-use crate::state::repo::StateRepository;
-use crate::state::service::StateService;
+use crate::post::repo::PostRepository;
+use crate::post::service::PostService;
 
 /// The assembled application: SQLite pool, concrete services and the router.
 /// Tests build exactly this composition root, so the binary and the test
@@ -57,7 +59,8 @@ pub async fn build_app(
 ) -> Result<App, Error> {
     let pool = open_database(&config).await?;
     let users = UserRepository::new(pool.clone());
-    let states = StateRepository::new(pool.clone());
+    let blog_repo = BlogRepository::new(pool.clone());
+    let post_repo = PostRepository::new(pool.clone());
 
     let cipher = EmailCipher::new(config.email_key, config.email_hmac_key.clone());
     let hasher = PasswordHasher::new(config.argon2_concurrency)?;
@@ -68,7 +71,8 @@ pub async fn build_app(
     ));
 
     let auth_service = AuthService::new(users.clone(), hasher, cipher.clone(), jwt.clone());
-    let state_service = StateService::new(states, users.clone(), cipher.clone(), clock.clone());
+    let blog_service = BlogService::new(blog_repo.clone(), clock.clone());
+    let post_service = PostService::new(post_repo, blog_repo, clock.clone());
 
     let limiters = Limiters {
         general: Arc::new(RateLimiter::per_minute(
@@ -85,7 +89,8 @@ pub async fn build_app(
         concurrency_gate: Arc::new(tokio::sync::Semaphore::new(config.max_concurrency)),
         config,
         auth_service,
-        states: state_service,
+        blogs: blog_service,
+        posts: post_service,
         assets,
         limiters,
         csp: Arc::from(DOCS_CSP),

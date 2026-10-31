@@ -55,8 +55,8 @@
 <style>
 	.terminal {
 		margin: 24px 0;
-		background: #171d29;
-		color: #e8edf5;
+		background: #0a0a0a;
+		color: #f2f2f2;
 		border-radius: 8px;
 		overflow: hidden;
 	}
@@ -66,8 +66,8 @@
 		align-items: center;
 		gap: 16px;
 		padding: 12px 22px;
-		background: #222b3b;
-		color: #bac6d9;
+		background: #1a1a1a;
+		color: #a3a3a3;
 		font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 		font-size: 11px;
 		letter-spacing: .04em;
@@ -76,17 +76,16 @@
 	.tabs button {
 		font: inherit;
 		font-size: 13px;
-		color: #bac6d9;
+		color: #a3a3a3;
 		background: none;
 		border: 0;
 		border-bottom: 2px solid transparent;
 		padding: 4px 0;
 		cursor: pointer;
 	}
-	.tabs button[aria-selected='true'] { color: #82e0b0; border-bottom-color: #82e0b0; }
-	.tabs button:hover { color: #e8edf5; }
-	.tabs button:focus-visible { outline-color: #8dc9ff; }
-	pre:focus-visible { outline-color: #8dc9ff; outline-offset: -3px; }
+	.tabs button[aria-selected='true'] { color: #fff; border-bottom-color: #fff; }
+	.tabs button:hover { color: #f2f2f2; }
+	pre:focus-visible { outline-color: #fff; outline-offset: -3px; }
 	pre {
 		margin: 0;
 		padding: 22px;
@@ -95,13 +94,14 @@
 		tab-size: 2;
 	}
 	code { color: inherit; font-size: 13px; overflow-wrap: normal; }
-	.comment { color: #a5b2c7; font-style: italic; }
-	.command { color: #82e0b0; font-weight: 700; }
-	.flag, .key { color: #8dc9ff; }
-	.string { color: #f0d48d; }
-	.variable { color: #d5b2ff; }
-	.number { color: #ffbb96; }
-	.operator { color: #8de0e5; }
+	.comment { color: #8a8a8a; font-style: italic; }
+	.command { color: #fff; font-weight: 700; }
+	.flag { color: #b3b3b3; }
+	.key { color: #d4d4d4; font-weight: 600; }
+	.string { color: #cccccc; }
+	.variable { color: #e5e5e5; font-weight: 600; }
+	.number { color: #a3a3a3; }
+	.operator { color: #8a8a8a; }
 	@media (max-width: 540px) {
 		pre { padding: 18px 16px; }
 		.terminal-bar { padding-inline: 16px; }

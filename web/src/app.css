@@ -1,4 +1,6 @@
 :root {
+	--border: #ddd;
+	--mono: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 	color-scheme: light;
 	font-family: 'Raleway', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
 	color: #171717;

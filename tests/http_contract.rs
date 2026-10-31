@@ -6,7 +6,10 @@ use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
 use serde_json::json;
 
-use common::{ALLOWED_ORIGIN, EMAIL, NOW, PASSWORD, TestApp, empty, json_request, register_token};
+use common::{
+    ALLOWED_ORIGIN, EMAIL, PASSWORD, TestApp, create_blog, create_post, empty, json_request,
+    register_token,
+};
 
 fn with_header(mut request: Request<Body>, name: &'static str, value: &str) -> Request<Body> {
     request
@@ -60,16 +63,16 @@ async fn docs_static_contract_keeps_cache_security_and_404_semantics() {
 }
 
 #[tokio::test]
-async fn public_reads_are_open_cors_without_credentials() {
+async fn public_delivery_never_allows_unknown_origins_or_credentials() {
     let app = TestApp::new().await;
     let request = with_header(
-        empty(Method::GET, "/state/latest"),
+        empty(Method::GET, "/public/blogs/unknown/posts"),
         "origin",
         "https://anywhere.example",
     );
     let response = app.send(request).await;
     assert_eq!(response.status, StatusCode::NOT_FOUND);
-    assert_eq!(response.header("access-control-allow-origin"), Some("*"));
+    assert!(response.header("access-control-allow-origin").is_none());
     assert!(
         response
             .header("access-control-allow-credentials")
@@ -127,18 +130,15 @@ async fn cors_preflight_is_classified_by_requested_method() {
 
     let public = Request::builder()
         .method(Method::OPTIONS)
-        .uri("/state/latest")
+        .uri("/public/blogs/unknown/posts/public")
         .header("origin", "https://anywhere.example")
         .header("access-control-request-method", "GET")
         .body(Body::empty())
         .unwrap();
     let response = app.send(public).await;
     assert_eq!(response.status, StatusCode::NO_CONTENT);
-    assert_eq!(response.header("access-control-allow-origin"), Some("*"));
-    assert_eq!(
-        response.header("access-control-allow-methods"),
-        Some("GET, HEAD")
-    );
+    assert!(response.header("access-control-allow-origin").is_none());
+    assert!(response.header("access-control-allow-methods").is_none());
 
     let restricted = Request::builder()
         .method(Method::OPTIONS)
@@ -159,7 +159,7 @@ async fn cors_preflight_is_classified_by_requested_method() {
     );
     assert_eq!(
         response.header("access-control-allow-methods"),
-        Some("GET, HEAD, POST, DELETE")
+        Some("GET, HEAD, POST, DELETE, PATCH, PUT")
     );
     assert_eq!(
         response.header("access-control-allow-headers"),
@@ -175,7 +175,7 @@ async fn auth_responses_are_no_store_but_public_reads_are_not() {
     assert_eq!(login.header("cache-control"), Some("no-store"));
     assert_eq!(login.header("x-content-type-options"), Some("nosniff"));
 
-    let public = app.send(empty(Method::GET, "/state/latest")).await;
+    let public = app.send(empty(Method::GET, "/public/blogs/none")).await;
     assert!(public.header("cache-control").is_none());
     assert_eq!(public.header("x-content-type-options"), Some("nosniff"));
 }
@@ -226,12 +226,12 @@ async fn general_rate_limit_applies_to_public_reads() {
     let peer: IpAddr = "192.0.2.11".parse().unwrap();
 
     assert_eq!(
-        app.send_as(empty(Method::GET, "/state/latest"), peer)
+        app.send_as(empty(Method::GET, "/public/blogs/none"), peer)
             .await
             .status,
         StatusCode::NOT_FOUND
     );
-    app.send_as(empty(Method::GET, "/state/latest"), peer)
+    app.send_as(empty(Method::GET, "/public/blogs/none"), peer)
         .await
         .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
 }
@@ -331,12 +331,25 @@ async fn forwarded_headers_are_only_trusted_from_a_configured_proxy() {
 async fn full_authenticated_write_read_round_trip() {
     let app = TestApp::new().await;
     let token = register_token(&app, EMAIL, PASSWORD).await;
-    let created = common::create_state(&app, &token, "round trip", NOW + 60).await;
+    let blog_id = create_blog(&app, &token, "Round Trip", "round-trip")
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({ "slug": "round-trip", "title": "Round Trip", "content_markdown": "# trip", "status": "published" }),
+    )
+    .await;
     assert_eq!(created.status, StatusCode::CREATED);
 
-    let latest = app
-        .send(empty(Method::GET, &format!("/state/latest?email={EMAIL}")))
+    let listed = app
+        .send(empty(Method::GET, "/public/blogs/round-trip/posts"))
         .await;
-    assert_eq!(latest.status, StatusCode::OK);
-    assert_eq!(latest.json()["text"], "round trip");
+    assert_eq!(listed.status, StatusCode::OK);
+    assert_eq!(listed.json()["total"], 1);
+    assert_eq!(listed.json()["items"][0]["slug"], "round-trip");
 }

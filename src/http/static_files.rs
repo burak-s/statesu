@@ -77,13 +77,18 @@ pub async fn fallback(State(state): State<AppState>, request: Request) -> Respon
             None => return not_found_response(),
         }
     };
-    let Some(asset) = state.assets.get(&lookup_path) else {
+    // Prerendered non-root pages are stored flat (`dashboard.html`), so a
+    // URL without an extension also resolves to `{path}.html`.
+    let Some((asset, resolved_path)) = resolve_assets(&state, &lookup_path) else {
         return not_found_response();
     };
-    let cache_mode = if index {
-        CacheMode::NoCache
-    } else if raw_path.starts_with("_app/immutable/") {
+    let is_page = index || resolved_path.ends_with(".html");
+    let cache_mode = if raw_path.starts_with("_app/immutable/") {
         CacheMode::Immutable
+    } else if is_page {
+        // HTML pages reference hashed assets; they must revalidate so a
+        // deployed build never serves stale markup.
+        CacheMode::NoCache
     } else {
         CacheMode::Default
     };
@@ -109,6 +114,19 @@ pub async fn fallback(State(state): State<AppState>, request: Request) -> Respon
     };
     apply_docs_security_headers(&mut response, &state);
     response
+}
+
+/// First lookup hit for a clean path, with a `.html` extension fallback for
+/// prerendered pages; returns the asset and the path it was found at.
+fn resolve_assets(state: &AppState, lookup_path: &str) -> Option<(StaticFile, String)> {
+    state
+        .assets
+        .get(lookup_path)
+        .map(|asset| (asset, lookup_path.to_owned()))
+        .or_else(|| {
+            let with_html = format!("{lookup_path}.html");
+            state.assets.get(&with_html).map(|asset| (asset, with_html))
+        })
 }
 
 /// Rejects traversal and hidden-path tricks before the asset map lookup.

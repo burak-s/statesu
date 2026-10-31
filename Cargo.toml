@@ -3,7 +3,7 @@ name = "statesu"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99"
-description = "Statesu backend: user statuses over HTTP with Axum, SQLite and UUIDv7."
+description = "Statesu backend: a small headless Markdown CMS over HTTP with Axum, SQLite and UUIDv7."
 license = "MIT"
 
 [dependencies]

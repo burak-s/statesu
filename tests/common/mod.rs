@@ -169,12 +169,59 @@ pub async fn login(app: &TestApp, email: &str, password: &str) -> TestResponse {
     .await
 }
 
-pub async fn create_state(app: &TestApp, token: &str, text: &str, expires_at: i64) -> TestResponse {
+pub async fn create_blog(app: &TestApp, token: &str, name: &str, slug: &str) -> TestResponse {
     let request = json_request(
         Method::POST,
-        "/state",
-        json!({ "text": text, "expires_at": expires_at }),
+        "/blogs",
+        json!({ "name": name, "slug": slug }),
     );
+    let (mut parts, body) = request.into_parts();
+    parts.headers.insert("authorization", bearer(token));
+    app.send(Request::from_parts(parts, body)).await
+}
+
+pub async fn create_post(app: &TestApp, token: &str, blog_id: &str, body: Value) -> TestResponse {
+    let request = json_request(Method::POST, &format!("/blogs/{blog_id}/posts"), body);
+    let (mut parts, body) = request.into_parts();
+    parts.headers.insert("authorization", bearer(token));
+    app.send(Request::from_parts(parts, body)).await
+}
+
+pub async fn patch_post(
+    app: &TestApp,
+    token: &str,
+    blog_id: &str,
+    post_id: &str,
+    body: Value,
+) -> TestResponse {
+    let request = json_request(
+        Method::PATCH,
+        &format!("/blogs/{blog_id}/posts/{post_id}"),
+        body,
+    );
+    let (mut parts, body) = request.into_parts();
+    parts.headers.insert("authorization", bearer(token));
+    app.send(Request::from_parts(parts, body)).await
+}
+
+pub async fn set_origins(
+    app: &TestApp,
+    token: &str,
+    blog_id: &str,
+    origins: Value,
+) -> TestResponse {
+    let request = json_request(
+        Method::PUT,
+        &format!("/blogs/{blog_id}/origins"),
+        json!({ "origins": origins }),
+    );
+    let (mut parts, body) = request.into_parts();
+    parts.headers.insert("authorization", bearer(token));
+    app.send(Request::from_parts(parts, body)).await
+}
+
+pub async fn authed(app: &TestApp, method: Method, path: &str, token: &str) -> TestResponse {
+    let request = empty(method, path);
     let (mut parts, body) = request.into_parts();
     parts.headers.insert("authorization", bearer(token));
     app.send(Request::from_parts(parts, body)).await
