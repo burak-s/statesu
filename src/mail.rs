@@ -62,11 +62,20 @@ impl Mailer for ResendMailer {
                         "resend request failed: {e}"
                     ))))
                 })?;
-            // Response bodies are logged without echo: they may contain
-            // request-identifying details nobody needs.
             if !response.status().is_success() {
+                // Resend bodies carry short human reasons ("domain not
+                // verified", "testing sender…"); include them truncated so
+                // operators can act without guessing. Keys are never logged.
+                let status = response.status();
+                let reason: String = response
+                    .text()
+                    .await
+                    .unwrap_or_default()
+                    .chars()
+                    .take(256)
+                    .collect();
                 return Err(Error::Internal(InternalError::new(std::io::Error::other(
-                    format!("resend rejected mail with status {}", response.status()),
+                    format!("resend rejected mail with status {status}: {reason}"),
                 ))));
             }
             Ok(())
