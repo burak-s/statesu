@@ -11,6 +11,7 @@
 pub mod auth;
 pub mod blog;
 pub mod bootstrap;
+pub mod cli;
 pub mod clock;
 pub mod config;
 pub mod crypto;
