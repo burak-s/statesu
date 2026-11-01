@@ -85,6 +85,8 @@ Copy `.env.example` to `.env`. Explicit environment variables always win over th
 
 Rebuild the dashboard (below) after editing `web/.env`: public env values are compiled in.
 
+For Docker deployment, set `PUBLIC_TURNSTILE_SITE_KEY` as a **variable** on GitHub's `production` environment, alongside the `STATESU_TURNSTILE_SECRET_KEY` **secret** from the same Cloudflare widget. The deploy workflow passes the site key through a Compose build argument into the frontend build. Changing it requires rebuilding the image; no server-local Compose override changes are needed. For a manual build, export `PUBLIC_TURNSTILE_SITE_KEY` in the shell or put it in the root `.env` before running `docker compose up --build -d`.
+
 ## Building & running
 
 ```sh

@@ -83,6 +83,7 @@ jobs:
          - name: Build & Restart
            env:
               COMPOSE_OVERRIDE: ${{ vars.STATESU_COMPOSE_OVERRIDE }}
+              PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.PUBLIC_TURNSTILE_SITE_KEY }}
            run: |
               set -euo pipefail
               args=(-f docker-compose.yml)

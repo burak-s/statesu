@@ -3,6 +3,8 @@ services:
       build:
          context: .
          dockerfile: Dockerfile
+         args:
+            PUBLIC_TURNSTILE_SITE_KEY: ${PUBLIC_TURNSTILE_SITE_KEY:-}
       container_name: statesu
       restart: unless-stopped
       env_file:
