@@ -1,5 +1,5 @@
 //! HTTP client for the Statesu management API: bearer PATs on `/blogs`,
-//! session cookies only for the login → token bootstrap. Redirects are never
+//! browser authorization codes for the login bootstrap. Redirects are never
 //! followed, so a saved token can never leak through a Location hop.
 
 use std::time::Duration;
@@ -8,18 +8,11 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use crate::cli::error::CliError;
-use crate::http::auth::{CSRF_COOKIE, CSRF_HEADER, SESSION_COOKIE};
 
 /// Page size used when scanning listings to resolve a slug locally.
 pub(crate) const MAX_PAGE: u32 = 100;
 
 // Wire shapes ------------------------------------------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Me {
-    pub id: String,
-    pub email: String,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blog {
@@ -55,13 +48,6 @@ pub struct Pat {
     pub secret: String,
 }
 
-/// Session handle carved out of the login response's Set-Cookie headers.
-#[derive(Debug, Clone)]
-pub struct Session {
-    cookie: String,
-    csrf: String,
-}
-
 /// Sparse patch body: `None` fields stay unchanged server-side.
 #[derive(Debug, Default, Serialize)]
 pub struct Patch {
@@ -73,18 +59,6 @@ pub struct Patch {
     pub content_markdown: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-struct Credentials<'a> {
-    email: &'a str,
-    password: &'a str,
-}
-
-#[derive(Debug, Serialize)]
-struct NewPat<'a> {
-    name: &'a str,
-    write: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,75 +127,31 @@ impl Api {
         }
     }
 
-    /// Session calls carry the HttpOnly cookie pair plus the CSRF header.
-    fn with_session(
+    pub async fn exchange_cli_code(
         &self,
-        builder: reqwest::RequestBuilder,
-        session: &Session,
-    ) -> reqwest::RequestBuilder {
-        builder
-            .header(reqwest::header::COOKIE, &session.cookie)
-            .header(CSRF_HEADER, &session.csrf)
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<Pat, CliError> {
+        self.json_ok(
+            self.request(reqwest::Method::POST, "/auth/cli/exchange", None)
+                .json(&serde_json::json!({
+                    "code": code, "code_verifier": verifier, "redirect_uri": redirect_uri,
+                }))
+                .send()
+                .await?,
+        )
+        .await
     }
 
-    // Sessions: login → token → logout ------------------------------------
-
-    pub async fn login(&self, email: &str, password: &str) -> Result<(Me, Session), CliError> {
-        let response = self
-            .request(reqwest::Method::POST, "/auth/login", None)
-            .json(&Credentials { email, password })
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            return Err(wire_error(response).await);
-        }
-        let token = Self::cookie_pair(&response, SESSION_COOKIE).ok_or_else(|| {
-            CliError::Config("server login response lacked the session cookie".into())
-        })?;
-        let csrf = Self::cookie_pair(&response, CSRF_COOKIE).ok_or_else(|| {
-            CliError::Config("server login response lacked the CSRF cookie".into())
-        })?;
-        let me: Me = response
-            .json()
-            .await
-            .map_err(|err| CliError::Config(format!("cannot decode server response: {err}")))?;
-        Ok((
-            me,
-            Session {
-                cookie: format!("{SESSION_COOKIE}={token}; {CSRF_COOKIE}={csrf}"),
-                csrf,
-            },
-        ))
-    }
-
-    pub async fn create_pat(&self, session: &Session, name: &str) -> Result<Pat, CliError> {
-        let builder = self
-            .with_session(
-                self.request(reqwest::Method::POST, "/auth/pats", None),
-                session,
-            )
-            .json(&NewPat { name, write: true });
-        self.json_ok(builder.send().await?).await
-    }
-
-    pub async fn delete_pat(&self, session: &Session, pat_id: &str) -> Result<(), CliError> {
-        let builder = self.with_session(
-            self.request(
-                reqwest::Method::DELETE,
-                &format!("/auth/pats/{pat_id}"),
-                None,
-            ),
-            session,
-        );
-        self.unit_ok(builder.send().await?).await
-    }
-
-    pub async fn logout(&self, session: &Session) -> Result<(), CliError> {
-        let builder = self.with_session(
-            self.request(reqwest::Method::POST, "/auth/logout", None),
-            session,
-        );
-        self.unit_ok(builder.send().await?).await
+    pub async fn revoke_token(&self, token: &str) -> Result<(), CliError> {
+        self.unit_ok(
+            self.request(reqwest::Method::POST, "/auth/cli/revoke", None)
+                .json(&serde_json::json!({ "token": token }))
+                .send()
+                .await?,
+        )
+        .await
     }
 
     // Blogs ----------------------------------------------------------------
@@ -365,22 +295,6 @@ impl Api {
             return Err(wire_error(response).await);
         }
         Ok(())
-    }
-
-    /// Pulls a named cookie value from the Set-Cookie response headers.
-    /// Cookie values here are server-generated hex tokens, so no decoding
-    /// beyond a split is needed.
-    fn cookie_pair(response: &reqwest::Response, name: &str) -> Option<String> {
-        response
-            .headers()
-            .get_all(reqwest::header::SET_COOKIE)
-            .iter()
-            .find_map(|value| {
-                let text = value.to_str().ok()?;
-                let (pair, _attributes) = text.split_once(';')?;
-                let (key, token) = pair.split_once('=')?;
-                (key.trim() == name).then(|| token.trim().to_owned())
-            })
     }
 }
 

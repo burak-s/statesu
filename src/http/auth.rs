@@ -106,6 +106,66 @@ pub struct ResendRequest {
     pub email: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliRevokeRequest {
+    pub token: String,
+}
+
+pub async fn revoke_cli_token(
+    State(state): State<AppState>,
+    StrictJson(request): StrictJson<CliRevokeRequest>,
+) -> Result<StatusCode, Error> {
+    state.auth_service.revoke_cli_token(&request.token).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliAuthorizeRequest {
+    pub redirect_uri: String,
+    pub code_challenge: String,
+    pub state: String,
+}
+
+pub async fn authorize_cli(
+    State(state): State<AppState>,
+    session: AuthedUser,
+    StrictJson(request): StrictJson<CliAuthorizeRequest>,
+) -> Result<Json<serde_json::Value>, Error> {
+    let redirect = state
+        .auth_service
+        .authorize_cli(
+            &session.user.id,
+            &request.redirect_uri,
+            &request.code_challenge,
+            &request.state,
+        )
+        .await?;
+    Ok(Json(serde_json::json!({ "redirect": redirect })))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CliExchangeRequest {
+    pub code: String,
+    pub code_verifier: String,
+    pub redirect_uri: String,
+}
+
+pub async fn exchange_cli_code(
+    State(state): State<AppState>,
+    StrictJson(request): StrictJson<CliExchangeRequest>,
+) -> Result<Json<serde_json::Value>, Error> {
+    let outcome = state
+        .auth_service
+        .exchange_cli_code(&request.code, &request.code_verifier, &request.redirect_uri)
+        .await?;
+    Ok(Json(
+        serde_json::json!({ "id": outcome.record.id, "secret": outcome.secret }),
+    ))
+}
+
 // Personal access tokens ------------------------------------------------
 
 pub async fn list_pats(

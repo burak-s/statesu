@@ -137,6 +137,15 @@ impl PatRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    pub async fn delete_by_hash(&self, hash: &[u8; 32]) -> Result<(), Error> {
+        sqlx::query("DELETE FROM pats WHERE token_hash = ?")
+            .bind(hash.as_slice())
+            .execute(&self.pool)
+            .await
+            .map_err(|e| Error::Internal(crate::error::InternalError::new(e)))?;
+        Ok(())
+    }
+
     /// ActivePAT cap per account; checked before minting a new token.
     pub async fn count_active(&self, user_id: &uuid::Uuid, now_unix: i64) -> Result<i64, Error> {
         sqlx::query_scalar("SELECT COUNT(*) FROM pats WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?)")

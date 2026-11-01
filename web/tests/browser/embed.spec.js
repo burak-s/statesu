@@ -1,5 +1,10 @@
 import { test as base, expect } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const API = `http://localhost:${process.env.STATESU_BROWSER_API_PORT ?? '4180'}`;
 const HOST = `http://127.0.0.1:${process.env.STATESU_BROWSER_HOST_PORT ?? '4181'}`;
@@ -82,6 +87,71 @@ async function signIn(page, account) {
 	await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 	await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
 }
+
+test('CLI login signs in on the website, approves access, exchanges PKCE code and logs out', async ({ page, request, account }) => {
+	test.skip(process.platform !== 'linux', 'isolated browser launcher fixture uses xdg-open');
+	const directory = await mkdtemp(join(tmpdir(), 'stscli-browser-'));
+	const root = fileURLToPath(new URL('../../../', import.meta.url));
+	const binary = resolve(root, process.env.CARGO_TARGET_DIR ?? 'target', 'debug/stscli');
+	const legacyBinary = resolve(root, process.env.CARGO_TARGET_DIR ?? 'target', 'debug/statesu-cli');
+	// Do not launch an external browser: Playwright opens the printed link.
+	await writeFile(join(directory, 'xdg-open'), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
+	const env = { ...process.env, XDG_CONFIG_HOME: directory, PATH: `${directory}:${process.env.PATH}` };
+	delete env.STATESU_TOKEN;
+	delete env.STATESU_SERVER;
+	const child = spawn(binary, ['login', '--server', API], { env });
+	let stderr = '';
+	let stdout = '';
+	child.stderr.on('data', (chunk) => { stderr += chunk; });
+	child.stdout.on('data', (chunk) => { stdout += chunk; });
+	const completion = new Promise((resolve, reject) => {
+		child.once('error', reject);
+		child.once('exit', (code) => resolve(code));
+	});
+	try {
+		await expect.poll(() => stderr.includes('/cli/authorize?')).toBe(true);
+		const link = stderr.match(/http:\/\/[^\s]+\/cli\/authorize\?[^\s]+/)[0];
+		const authorization = new URL(link);
+		const callback = authorization.searchParams.get('redirect_uri');
+		// Incorrect state must not finish or consume the pending login.
+		const bad = new URL(callback);
+		bad.searchParams.set('state', '0'.repeat(64));
+		bad.searchParams.set('code', 'su_cli_' + 'a'.repeat(64));
+		expect((await request.get(bad.href)).status()).toBe(400);
+		await page.goto(link);
+		await page.getByRole('link', { name: 'Sign in to continue' }).click();
+		await page.getByLabel('Email', { exact: true }).fill(account.email);
+		await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
+		await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+		await expect(page).toHaveURL(link);
+		await expect(page.getByText(account.email, { exact: true })).toBeVisible();
+		await page.getByRole('button', { name: 'Authorize CLI', exact: true }).click();
+		await expect(page.getByRole('heading', { name: 'Authorization received' })).toBeVisible();
+		expect(await completion).toBe(0);
+		expect(stdout).toContain('Logged in via browser.');
+		const settings = JSON.parse(await readFile(join(directory, 'statesu/cli.json'), 'utf8'));
+		expect(settings.pat).toMatch(/^su_pat_/);
+		expect(stdout).not.toContain(settings.pat);
+		expect(stderr).not.toContain(settings.pat);
+		const whoami = JSON.parse(execFileSync(binary, ['whoami', '--json'], { env, encoding: 'utf8' }));
+		expect(whoami.blogs.some((blog) => blog.id === account.blog.id)).toBe(true);
+		const legacyWhoami = JSON.parse(execFileSync(legacyBinary, ['whoami', '--json'], { env, encoding: 'utf8' }));
+		expect(legacyWhoami).toEqual(whoami);
+		execFileSync(binary, ['logout'], { env });
+		expect((await request.get(`${API}/blogs`, {
+			headers: { Authorization: `Bearer ${settings.pat}` }
+		})).status()).toBe(401);
+	} finally {
+		child.kill();
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('CLI authorization rejects external callbacks before offering sign-in', async ({ page }) => {
+	await page.goto(`${API}/cli/authorize?redirect_uri=https://evil.example/callback&code_challenge=${'a'.repeat(43)}&state=${'b'.repeat(64)}`);
+	await expect(page.getByRole('alert')).toContainText('Invalid CLI authorization link');
+	await expect(page.getByRole('link', { name: 'Sign in to continue' })).toHaveCount(0);
+});
 
 test('real bundle resolves deep links, refresh, future posts and the root prefix across origins', async ({ page, context, request, account }) => {
 	await createPost(request, account, 'test', { status: 'published' });

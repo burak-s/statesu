@@ -3,7 +3,7 @@
 Statesu is a small, self-hosted **headless Markdown CMS** with a hard security focus. It ships as:
 
 - a **backend** — a single Rust binary over HTTP: blog & post management, email-verified accounts, sessions and personal access tokens (PATs), public per-blog delivery with per-blog CORS, embedded dashboard/docs SPA;
-- a **CLI** — `statesu-cli`, a terminal client to write, edit and publish posts without Git or any local post storage: the server is the source of truth.
+- a **CLI** — `stscli`, a terminal client to write, edit and publish posts without Git or any local post storage: the server is the source of truth.
 
 Backend: Axum + SQLite + UUIDv7, no filesystem dependence beyond one SQLite file. Delivery and management are cleanly separated (`/public/...` vs session/PAT-guarded routes). Frontend: SvelteKit dashboard, embedded into the binary at compile time.
 
@@ -28,7 +28,7 @@ CLI development is separate and does not start the API or web server:
 
 ```sh
 make dev-cli                                      # show CLI help
-make dev-cli ARGS="login --server https://statesu.com"
+make dev-cli ARGS="login"
 make dev-cli ARGS="blog list"
 ```
 
@@ -154,7 +154,7 @@ Set `STATESU_COMPOSE_OVERRIDE` as a production **variable** if the deployment ne
 
 Before `docker compose up`, the workflow renders `.env` from these values (unset variables simply fall through to server defaults), validates that the required ones exist, and truncates any stale `.env` from previous manual runs. `STATESU_DB` stays `/data/statesu.db`, set by the compose file itself. CI does not need any of these secrets: tests run with stubbed mailer/verification and no network.
 
-## CLI (`statesu-cli`)
+## CLI (`stscli`)
 
 A terminal client for the HTTP API. There is deliberately **no Git and no local post storage**: content lives on the server; locally only connection settings and the saved token persist (`$XDG_CONFIG_HOME/statesu/cli.json`, else `~/.config/statesu/cli.json`, else `$APPDATA/...`; written user-only, token included).
 
@@ -162,30 +162,32 @@ A terminal client for the HTTP API. There is deliberately **no Git and no local 
 
 ```sh
 cargo build --release --locked
-# binary: target/release/statesu-cli
-cp target/release/statesu-cli ~/.local/bin/   # or anywhere on PATH
+# binary: target/release/stscli
+cp target/release/stscli ~/.local/bin/   # or anywhere on PATH
 ```
+
+The legacy `statesu-cli` binary remains available for compatibility and shares the same saved connection settings and `STATESU_*` environment variables.
 
 ### Interactive usage
 
 ```sh
-statesu-cli login                    # prompts for server, email, password;
-                                     # mints a write-scoped PAT and saves it
-statesu-cli blog list
-statesu-cli blog create "Blogum"     # --slug blogum to override the slug
-statesu-cli blog use blogum          # select the blog for later commands
+stscli login                  # opens statesu.com for website login + CLI approval;
+                              # saves a write-scoped PAT locally
+stscli blog list
+stscli blog create "Blogum"     # --slug blogum to override the slug
+stscli blog use blogum          # select the blog for later commands
 
-statesu-cli post new "First post"    # opens $VISUAL/$EDITOR (fallback: vi)
-statesu-cli post new "First post" --publish
-statesu-cli post create --file post.md --title "First post" --publish
-cat post.md | statesu-cli post create --title "First post" --slug from-stdin
+stscli post new "First post"    # opens $VISUAL/$EDITOR (fallback: vi)
+stscli post new "First post" --publish
+stscli post create --file post.md --title "First post" --publish
+cat post.md | stscli post create --title "First post" --slug from-stdin
 
-statesu-cli post list [--page 1 --size 20]
-statesu-cli post get first-post      # prints raw Markdown
-statesu-cli post edit first-post     # updates body only; keeps status
-statesu-cli post publish first-post
-statesu-cli post unpublish first-post
-statesu-cli post delete first-post   # confirmation prompt; --yes to skip
+stscli post list [--page 1 --size 20]
+stscli post get first-post      # prints raw Markdown
+stscli post edit first-post     # updates body only; keeps status
+stscli post publish first-post
+stscli post unpublish first-post
+stscli post delete first-post   # confirmation prompt; --yes to skip
 ```
 
 Some semantics worth knowing:
@@ -194,6 +196,7 @@ Some semantics worth knowing:
 - Editing a **published** post changes the live content immediately (warned on stderr). There is no revision/history layer.
 - `post new`/`edit` need an interactive terminal. `post create` reads `--file` or piped stdin and never opens an editor.
 - Slugs are derived from titles (ASCII-fold, Turkish İ/ı/ş/ğ included); the server accepts only `a-z 0-9 -` up to 63 chars. Pass `--slug` when derivation fails.
+- The default server is `https://statesu.com`. Self-hosted deployments use `--server https://your-host` or `STATESU_SERVER`; a server saved by login is reused. Precedence: flag → environment → saved server → hosted default.
 - Every command takes `--blog <id|slug>` to act on another blog without changing the selection; blog/post slug targets are resolved by scanning listings once per call.
 
 ### Automation
@@ -205,19 +208,19 @@ Some semantics worth knowing:
 
 ```sh
 STATESU_SERVER=https://cms.example.com STATESU_TOKEN=su_pat_... \
-  statesu-cli post create --file post.md --title "Hello" --publish --blog blog --yes
+  stscli post create --file post.md --title "Hello" --publish --blog blog --yes
 ```
 
 Security-relevant behavior:
 
-- `login` creates a temporary session, mints a write-enabled PAT, revokes the session, stores the PAT; `logout` revokes the PAT on the server (asks credentials again, since revocation is a session capability) and clears local state. If revocation fails, you are told, and you can delete the token in the dashboard.
+- `login` opens the website for sign-in and explicit CLI approval. A short-lived, single-use code returns to an ephemeral `127.0.0.1` listener; S256 PKCE and a state nonce bind it to this CLI. The CLI exchanges the code for a write-enabled PAT and saves it locally. No password or token is entered in the terminal. `logout` revokes only the saved token using possession of that token and clears local state. If revocation fails, delete the token in the dashboard.
 - HTTPS everywhere, plain HTTP only for loopback hosts (`localhost`, `127.0.0.1`, `::1`, `.localhost`).
 - Redirects are never followed, so a saved token never leaks through a Location hop.
 - Tokens are never printed, logged or mixed into normal output; `--json` prints only JSON on stdout, warns/errors on stderr.
 
 Exit codes: `0` success, `1` operation failure (network, API, local I/O), `2` usage/argument error.
 
-> **Turnstile note:** when the server has a Turnstile secret configured, `login` cannot pass the challenge; mint a token in the dashboard and use `STATESU_TOKEN` instead.
+> **Browser login:** Turnstile runs on the website, not in the CLI. If your browser does not open automatically, open the printed URL on the same computer within five minutes. Remote/SSH environments need loopback forwarding or a pre-provisioned `STATESU_TOKEN` for automation; there is no `login --token` option.
 
 ## HTTP API overview
 
@@ -228,6 +231,9 @@ POST/GET   /auth/register  /auth/login  /auth/logout  /auth/me
 POST       /auth/verify    /auth/resend
 POST/GET   /auth/pats                DELETE /auth/pats/{id}
 DELETE     /auth/sessions            (logout everywhere)
+POST       /auth/cli/authorize       (session + CSRF; loopback redirect with a code)
+POST       /auth/cli/exchange        (one-time code + S256 PKCE verifier → PAT)
+POST       /auth/cli/revoke          (revoke only the presented PAT)
 POST/GET   /blogs                    PATCH/DELETE /blogs/{blog_id}
 PUT        /blogs/{blog_id}/origins  POST/GET /blogs/{blog_id}/posts
 GET/PATCH/DELETE /blogs/{blog_id}/posts/{post_id}
@@ -247,7 +253,7 @@ Errors are always `{"error": "<stable message>"}` with the status assigned by th
 
 ```
 src/           Rust crate: http/ (handlers+middleware), auth|blog|post/ (service+repo),
-               crypto/ (hashing, encryption, tokens), cli/ (statesu-cli), bin/ (targets)
+               crypto/ (hashing, encryption, tokens), cli/ (stscli), bin/ (targets)
 migrations/    SQLx migrations, applied automatically on startup
 web/           SvelteKit dashboard + embed script (built into assets/dist)
 assets/dist/   Compiled web output, embedded via rust-embed

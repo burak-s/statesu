@@ -10,8 +10,14 @@ const apiPort = process.env.STATESU_BROWSER_API_PORT ?? '4180';
 const hostPort = process.env.STATESU_BROWSER_HOST_PORT ?? '4181';
 const api = `http://localhost:${apiPort}`;
 
-execFileSync('make', ['web'], { cwd: root, stdio: 'inherit' });
-execFileSync('cargo', ['build', '--locked', '--example', 'browser_server'], {
+// The test backend disables Turnstile; keep the bundled login form aligned,
+// independently of a developer's local production site key.
+execFileSync('make', ['web'], {
+	cwd: root,
+	stdio: 'inherit',
+	env: { ...process.env, PUBLIC_TURNSTILE_SITE_KEY: '' }
+});
+execFileSync('cargo', ['build', '--locked', '--example', 'browser_server', '--bin', 'stscli', '--bin', 'statesu-cli'], {
 	cwd: root,
 	stdio: 'inherit'
 });

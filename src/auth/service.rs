@@ -23,6 +23,7 @@ pub struct AuthService {
     sessions: SessionRepository,
     verifications: VerificationTokenRepository,
     pats: PatRepository,
+    cli_authorizations: crate::auth::cli_repo::CliAuthorizationRepository,
     hasher: PasswordHasher,
     cipher: EmailCipher,
     mailer: Arc<dyn Mailer>,
@@ -61,6 +62,7 @@ impl AuthService {
         sessions: SessionRepository,
         verifications: VerificationTokenRepository,
         pats: PatRepository,
+        cli_authorizations: crate::auth::cli_repo::CliAuthorizationRepository,
         hasher: PasswordHasher,
         cipher: EmailCipher,
         mailer: Arc<dyn Mailer>,
@@ -73,6 +75,7 @@ impl AuthService {
             sessions,
             verifications,
             pats,
+            cli_authorizations,
             hasher,
             cipher,
             mailer,
@@ -80,6 +83,74 @@ impl AuthService {
             clock,
             public_url,
         }
+    }
+
+    pub async fn revoke_cli_token(&self, secret: &str) -> Result<(), Error> {
+        if !token::well_formed(secret, token::PAT_PREFIX) {
+            return Err(Error::InvalidToken);
+        }
+        // Possession permits revoking only this token, never another token.
+        self.pats.delete_by_hash(&token::hash(secret)).await
+    }
+
+    /// Browser approval creates a short-lived, PKCE-bound grant, never a PAT URL.
+    pub async fn authorize_cli(
+        &self,
+        user_id: &uuid::Uuid,
+        redirect_uri: &str,
+        challenge: &str,
+        state: &str,
+    ) -> Result<String, Error> {
+        let mut redirect = validate_cli_redirect(redirect_uri)?;
+        if challenge.len() != 43
+            || !challenge
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || !token::well_formed(state, "")
+        {
+            return Err(Error::InvalidInput);
+        }
+        let code = token::generate("su_cli_")?;
+        self.cli_authorizations
+            .create(
+                &token::hash(&code),
+                user_id,
+                challenge,
+                redirect_uri,
+                self.clock.now(),
+            )
+            .await?;
+        redirect
+            .query_pairs_mut()
+            .append_pair("code", &code)
+            .append_pair("state", state);
+        Ok(redirect.to_string())
+    }
+
+    pub async fn exchange_cli_code(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+    ) -> Result<PatOutcome, Error> {
+        use base64::Engine;
+        validate_cli_redirect(redirect_uri)?;
+        if !token::well_formed(code, "su_cli_") || !token::well_formed(verifier, "") {
+            return Err(Error::InvalidToken);
+        }
+        let challenge =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(token::hash(verifier));
+        let user_id = self
+            .cli_authorizations
+            .consume(
+                &token::hash(code),
+                &challenge,
+                redirect_uri,
+                self.clock.now(),
+            )
+            .await?;
+        self.create_pat(&user_id, "stscli", PatScopes::read_write(), None)
+            .await
     }
 
     /// The human gate for register and login: with no secret configured the
@@ -360,6 +431,23 @@ impl AuthService {
 
 /// Absolute link for a verification token, built only from the configured
 /// public origin so host headers can never poison it.
+/// Only the CLI's exact IPv4 loopback callback is eligible for redirects.
+fn validate_cli_redirect(value: &str) -> Result<reqwest::Url, Error> {
+    let url = reqwest::Url::parse(value).map_err(|_| Error::InvalidInput)?;
+    if url.scheme() != "http"
+        || url.host_str() != Some("127.0.0.1")
+        || url.port().is_none_or(|port| port == 0)
+        || url.path() != "/callback"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::InvalidInput);
+    }
+    Ok(url)
+}
+
 fn verification_link(public_url: &crate::config::PublicUrl, token: &str) -> String {
     public_url.link(&format!("/verify?token={token}"))
 }

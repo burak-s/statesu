@@ -760,6 +760,178 @@ async fn register_time_is_stable_and_expiration_fields_match_the_clock() {
     let _ = NOW;
 }
 
+// Browser CLI authorization -------------------------------------------------
+
+fn cli_request() -> serde_json::Value {
+    use base64::Engine;
+    json!({
+        "redirect_uri": "http://127.0.0.1:49152/callback",
+        "code_challenge": base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(statesu::crypto::token::hash(&"a".repeat(64))),
+        "state": "b".repeat(64),
+    })
+}
+
+async fn cli_code(app: &TestApp, session: &str, csrf: &str) -> String {
+    let response = app
+        .send(session_authorized(
+            json_request(Method::POST, "/auth/cli/authorize", cli_request()),
+            session,
+            csrf,
+        ))
+        .await;
+    assert_eq!(response.status, StatusCode::OK, "{}", response.text());
+    let body = response.json();
+    assert!(body.get("secret").is_none());
+    let url = reqwest::Url::parse(body["redirect"].as_str().unwrap()).unwrap();
+    assert_eq!(url.origin().ascii_serialization(), "http://127.0.0.1:49152");
+    assert_eq!(
+        url.query_pairs().find(|(key, _)| key == "state").unwrap().1,
+        "b".repeat(64)
+    );
+    url.query_pairs()
+        .find(|(key, _)| key == "code")
+        .unwrap()
+        .1
+        .into_owned()
+}
+
+fn cli_exchange(code: &str) -> serde_json::Value {
+    json!({
+        "code": code,
+        "code_verifier": "a".repeat(64),
+        "redirect_uri": "http://127.0.0.1:49152/callback",
+    })
+}
+
+#[tokio::test]
+async fn cli_browser_grant_requires_session_csrf_and_safe_redirect() {
+    let app = TestApp::new().await;
+    common::register_and_verify(&app, EMAIL, PASSWORD).await;
+    let (session, csrf) = login_session(&app, EMAIL, PASSWORD).await;
+    let request = || json_request(Method::POST, "/auth/cli/authorize", cli_request());
+    assert_eq!(app.send(request()).await.status, StatusCode::UNAUTHORIZED);
+    let mut no_csrf = request();
+    no_csrf
+        .headers_mut()
+        .insert("cookie", cookie_header(&session));
+    assert_eq!(app.send(no_csrf).await.status, StatusCode::FORBIDDEN);
+    for redirect in [
+        "https://evil.example/callback",
+        "http://localhost:49152/callback",
+        "http://127.0.0.1.evil.example:49152/callback",
+        "http://127.0.0.2:49152/callback",
+        "http://127.0.0.1/callback",
+        "http://127.0.0.1:0/callback",
+        "http://127.0.0.1:49152/other",
+        "http://127.0.0.1:49152/callback?x=1",
+        "http://user@127.0.0.1:49152/callback",
+        "http://127.0.0.1:49152/callback#fragment",
+    ] {
+        let mut body = cli_request();
+        body["redirect_uri"] = json!(redirect);
+        let response = app
+            .send(session_authorized(
+                json_request(Method::POST, "/auth/cli/authorize", body),
+                &session,
+                &csrf,
+            ))
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::BAD_REQUEST,
+            "{redirect}: {}",
+            response.text()
+        );
+    }
+    for field in ["state", "code_challenge"] {
+        let mut body = cli_request();
+        body[field] = json!("invalid");
+        assert_eq!(
+            app.send(session_authorized(
+                json_request(Method::POST, "/auth/cli/authorize", body),
+                &session,
+                &csrf,
+            ))
+            .await
+            .status,
+            StatusCode::BAD_REQUEST
+        );
+    }
+}
+
+#[tokio::test]
+async fn cli_browser_code_is_pkce_bound_expiring_and_single_use() {
+    let app = TestApp::new().await;
+    common::register_and_verify(&app, EMAIL, PASSWORD).await;
+    let (session, csrf) = login_session(&app, EMAIL, PASSWORD).await;
+    let code = cli_code(&app, &session, &csrf).await;
+    // A stolen code cannot be redeemed without its verifier and exact callback.
+    for (field, wrong) in [
+        ("code_verifier", "c".repeat(64)),
+        ("redirect_uri", "http://127.0.0.1:49153/callback".into()),
+    ] {
+        let mut body = cli_exchange(&code);
+        body[field] = json!(wrong);
+        assert_eq!(
+            app.send(json_request(Method::POST, "/auth/cli/exchange", body))
+                .await
+                .status,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    // Two simultaneous redemptions can produce only one token.
+    let (first, second) = tokio::join!(
+        app.send(json_request(
+            Method::POST,
+            "/auth/cli/exchange",
+            cli_exchange(&code)
+        )),
+        app.send(json_request(
+            Method::POST,
+            "/auth/cli/exchange",
+            cli_exchange(&code)
+        )),
+    );
+    let (success, replay) = if first.status == StatusCode::OK {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    assert_eq!(success.status, StatusCode::OK, "{}", success.text());
+    assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
+    let body = success.json();
+    let secret = body["secret"].as_str().unwrap();
+    // The issued token supports writes without a session cookie.
+    assert_eq!(
+        common::create_blog(&app, secret, "CLI blog", "cli-blog")
+            .await
+            .status,
+        StatusCode::CREATED
+    );
+    let revoke = || json_request(Method::POST, "/auth/cli/revoke", json!({"token": secret}));
+    assert_eq!(app.send(revoke()).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(app.send(revoke()).await.status, StatusCode::NO_CONTENT);
+    assert_eq!(
+        common::create_blog(&app, secret, "Revoked", "revoked")
+            .await
+            .status,
+        StatusCode::UNAUTHORIZED
+    );
+    let expired = cli_code(&app, &session, &csrf).await;
+    app.clock.advance(120);
+    assert_eq!(
+        app.send(json_request(
+            Method::POST,
+            "/auth/cli/exchange",
+            cli_exchange(&expired)
+        ))
+        .await
+        .status,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
 // Turnstile ----------------------------------------------------------------
 
 #[tokio::test]

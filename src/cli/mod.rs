@@ -1,8 +1,9 @@
-//! The `statesu-cli` terminal client: create, edit, publish and delete posts
+//! The `stscli` terminal client: create, edit, publish and delete posts
 //! on a running Statesu server over its HTTP API. There is deliberately no
 //! Git and no local post storage: the server is the source of truth, and
 //! locally only connection settings and the saved token persist.
 
+mod browser;
 mod client;
 mod editor;
 mod error;
@@ -24,12 +25,13 @@ use settings::Settings;
 
 /// Server URL and token overrides for automation environments.
 const SERVER_ENV: &str = "STATESU_SERVER";
+const DEFAULT_SERVER: &str = "https://statesu.com";
 const TOKEN_ENV: &str = "STATESU_TOKEN";
 
 /// Flags shared by every subcommand.
 #[derive(Debug, clap::Args)]
 pub struct Shared {
-    /// CMS base URL, overriding the stored server and STATESU_SERVER.
+    /// CMS base URL, overriding STATESU_SERVER and saved settings (default: https://statesu.com).
     #[arg(long, global = true)]
     pub server: Option<String>,
     /// Blog id or slug for this command, overriding the stored selection.
@@ -40,10 +42,10 @@ pub struct Shared {
     pub json: bool,
 }
 
-/// Top-level CLI: parsed by the `statesu-cli` binary target.
+/// Top-level CLI shared by `stscli` and the legacy `statesu-cli` binary.
 #[derive(Debug, Parser)]
 #[command(
-    name = "statesu-cli",
+    name = "stscli",
     version,
     about = "Terminal client for the Statesu CMS: write and publish posts without Git."
 )]
@@ -184,14 +186,14 @@ struct Authed {
 impl Authed {
     async fn new(shared: &Shared) -> Result<Self, CliError> {
         let settings = Settings::load()?;
-        let server = resolve_server(shared.server.as_deref(), &settings)?;
+        let server = resolve_server(shared.server.as_deref(), &settings);
         let api = client::Api::new(&server)?;
         let pat = env::var(TOKEN_ENV)
             .ok()
             .filter(|value| !value.trim().is_empty())
             .or(settings.pat.clone())
             .ok_or_else(|| {
-                CliError::usage("no token saved: run `statesu-cli login` or set STATESU_TOKEN")
+                CliError::usage("no token saved: run `stscli login` or set STATESU_TOKEN")
             })?;
         Ok(Authed {
             api,
@@ -211,9 +213,7 @@ impl Authed {
             .as_deref()
             .or(self.settings.blog_id.as_deref())
             .ok_or_else(|| {
-                CliError::usage(
-                    "no blog selected: run `statesu-cli blog use <slug>` or pass --blog",
-                )
+                CliError::usage("no blog selected: run `stscli blog use <slug>` or pass --blog")
             })?;
         if let Ok(id) = parse_uuid(target) {
             return Ok(id);
@@ -259,8 +259,8 @@ fn parse_uuid(text: &str) -> Result<String, ()> {
         .map_err(|_| ())
 }
 
-/// Server precedence: --server flag, STATESU_SERVER, stored settings.
-fn resolve_server(explicit: Option<&str>, settings: &Settings) -> Result<String, CliError> {
+/// Server precedence: --server flag, STATESU_SERVER, stored settings, hosted default.
+fn resolve_server(explicit: Option<&str>, settings: &Settings) -> String {
     explicit
         .map(str::to_owned)
         .or_else(|| {
@@ -269,31 +269,16 @@ fn resolve_server(explicit: Option<&str>, settings: &Settings) -> Result<String,
                 .filter(|value| !value.trim().is_empty())
         })
         .or_else(|| settings.server.clone())
-        .ok_or_else(|| {
-            CliError::usage(
-                "no server set: pass --server or run `statesu-cli login --server <url>`",
-            )
-        })
+        .unwrap_or_else(|| DEFAULT_SERVER.to_owned())
 }
 
 // Auth commands ---------------------------------------------------------
 
 async fn login(server: Option<&str>) -> Result<(), CliError> {
     let settings = Settings::load()?;
-    let server = resolve_server(server, &settings)?;
+    let server = resolve_server(server, &settings);
     let api = client::Api::new(&server)?;
-    if !std::io::stdin().is_terminal() {
-        return Err(CliError::usage(
-            "login needs an interactive terminal; for automation mint a token in the dashboard and set STATESU_TOKEN",
-        ));
-    }
-    let email = prompt("Email: ")?;
-    let password = rpassword::prompt_password("Password: ").map_err(CliError::Io)?;
-    if email.is_empty() || password.is_empty() {
-        return Err(CliError::usage("email and password are required"));
-    }
-    let (me, session) = api.login(&email, &password).await?;
-    let token = api.create_pat(&session, "statesu-cli").await?;
+    let token = browser::login(&api, &server).await?;
     let mut settings = settings;
     let same_server = settings.server.as_deref() == Some(server.as_str());
     settings.server = Some(server);
@@ -304,10 +289,7 @@ async fn login(server: Option<&str>) -> Result<(), CliError> {
         settings.blog_id = None;
     }
     settings.save()?;
-    if let Err(err) = api.logout(&session).await {
-        eprintln!("warning: the temporary session was not revoked ({err}); it expires server-side");
-    }
-    println!("Logged in as {}.", me.email);
+    println!("Logged in via browser.");
     println!("Token saved to {}.", Settings::path()?.display());
     Ok(())
 }
@@ -342,8 +324,12 @@ async fn whoami(shared: &Shared) -> Result<(), CliError> {
 async fn logout(server: Option<&str>) -> Result<(), CliError> {
     let mut settings = Settings::load()?;
     let server = resolve_server(server, &settings);
-    if let (Ok(server), Some(pat_id)) = (server, settings.pat_id.clone()) {
-        match revoke_token(&server, &pat_id).await {
+    if let Some(pat) = settings.pat.as_deref() {
+        let result = match client::Api::new(&server) {
+            Ok(api) => api.revoke_token(pat).await,
+            Err(err) => Err(err),
+        };
+        match result {
             Ok(()) => println!("Token revoked on the server."),
             Err(err) => eprintln!(
                 "warning: token not revoked ({err}); delete it in the dashboard if it still works"
@@ -364,22 +350,6 @@ async fn logout(server: Option<&str>) -> Result<(), CliError> {
     Ok(())
 }
 
-/// Revocation is a session capability, so it asks for credentials once more.
-async fn revoke_token(server: &str, pat_id: &str) -> Result<(), CliError> {
-    if !std::io::stdin().is_terminal() {
-        return Err(CliError::usage(
-            "token revocation needs an interactive terminal",
-        ));
-    }
-    let api = client::Api::new(server)?;
-    let email = prompt("Email: ")?;
-    let password = rpassword::prompt_password("Password: ").map_err(CliError::Io)?;
-    let (_, session) = api.login(&email, &password).await?;
-    let result = api.delete_pat(&session, pat_id).await;
-    let _ = api.logout(&session).await;
-    result
-}
-
 // Blog commands ---------------------------------------------------------
 
 async fn blog_command(shared: &Shared, command: BlogCommand) -> Result<(), CliError> {
@@ -391,7 +361,7 @@ async fn blog_command(shared: &Shared, command: BlogCommand) -> Result<(), CliEr
                 return print_json(&blogs);
             }
             if blogs.is_empty() {
-                println!("No blogs yet. Create one: `statesu-cli blog create \"Name\"`");
+                println!("No blogs yet. Create one: `stscli blog create \"Name\"`");
                 return Ok(());
             }
             let rows: Vec<Vec<String>> = blogs
@@ -421,7 +391,7 @@ async fn blog_command(shared: &Shared, command: BlogCommand) -> Result<(), CliEr
             let blogs = authed.api.blogs(&authed.pat).await?;
             let found = blogs.iter().find(|blog| blog.slug == slug).ok_or_else(|| {
                 CliError::usage(format!(
-                    "no blog with slug '{slug}'; run `statesu-cli blog list`"
+                    "no blog with slug '{slug}'; run `stscli blog list`"
                 ))
             })?;
             authed.settings.blog_id = Some(found.id.clone());
@@ -765,6 +735,54 @@ fn fold(character: char) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_name_is_stscli_and_legacy_invocation_still_parses() {
+        use clap::CommandFactory;
+        let mut command = Cli::command();
+        assert_eq!(command.get_name(), "stscli");
+        assert!(command.render_help().to_string().contains("Usage: stscli"));
+        for binary in ["stscli", "statesu-cli"] {
+            let cli = Cli::try_parse_from([binary, "login"]).unwrap();
+            assert!(matches!(cli.command, Command::Login));
+        }
+    }
+
+    #[test]
+    fn server_resolution_defaults_to_hosted_and_preserves_overrides() {
+        let mut settings = Settings::default();
+        let environment = env::var(SERVER_ENV)
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        assert_eq!(
+            resolve_server(None, &settings),
+            environment.as_deref().unwrap_or("https://statesu.com")
+        );
+        settings.server = Some("https://saved.example".into());
+        assert_eq!(
+            resolve_server(None, &settings),
+            environment.as_deref().unwrap_or("https://saved.example")
+        );
+        assert_eq!(
+            resolve_server(Some("https://custom.example"), &settings),
+            "https://custom.example"
+        );
+    }
+
+    #[test]
+    fn login_uses_browser_and_rejects_token_flag() {
+        let cli = Cli::try_parse_from([
+            "stscli",
+            "login",
+            "--server",
+            "https://statesu.com",
+            "--token",
+        ]);
+        assert!(cli.is_err(), "manual token login is no longer supported");
+        assert!(
+            Cli::try_parse_from(["stscli", "login", "--server", "https://statesu.com"]).is_ok()
+        );
+    }
 
     #[test]
     fn slugify_folds_and_trims() {

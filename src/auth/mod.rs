@@ -1,3 +1,4 @@
+pub mod cli_repo;
 pub mod pat_repo;
 pub mod repo;
 pub mod service;

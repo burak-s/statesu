@@ -156,10 +156,24 @@
 		checkSession();
 	});
 
+	// Only the CLI authorization route may be resumed after browser sign-in.
+	function resumeCliAuthorization() {
+		const next = new URLSearchParams(window.location.search).get('next');
+		if (next && next.startsWith('/cli/authorize?')) {
+			const target = new URL(next, window.location.origin);
+			if (target.origin === window.location.origin && target.pathname === '/cli/authorize') {
+				window.location.replace(target.href);
+				return true;
+			}
+		}
+		return false;
+	}
+
 	async function checkSession() {
 		const result = await request('/auth/me');
 		if (result.ok) {
 			me = result.data;
+			if (resumeCliAuthorization()) return;
 			await refreshPats();
 			await refreshBlogs();
 		} else {
@@ -218,6 +232,7 @@
 		}
 		me = result.data;
 		authPassword = '';
+		if (resumeCliAuthorization()) return;
 		await refreshPats();
 		await refreshBlogs();
 	}

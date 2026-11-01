@@ -110,6 +110,7 @@ pub async fn build_app_with_turnstile(
         SessionRepository::new(pool.clone()),
         VerificationTokenRepository::new(pool.clone()),
         PatRepository::new(pool.clone()),
+        crate::auth::cli_repo::CliAuthorizationRepository::new(pool.clone()),
         hasher,
         cipher.clone(),
         mailer.clone(),

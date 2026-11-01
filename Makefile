@@ -64,7 +64,7 @@ dev: $(WEB_MODULES)
 
 # CLI-only development; e.g. make dev-cli ARGS="blog list".
 dev-cli:
-	cargo run --locked --bin statesu-cli -- $(ARGS)
+	cargo run --locked --bin stscli -- $(ARGS)
 
 test:
 	cargo test --all-targets --locked

@@ -70,6 +70,9 @@ pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/auth/register", post(auth::register))
         .route("/auth/login", post(auth::login))
+        .route("/auth/cli/authorize", post(auth::authorize_cli))
+        .route("/auth/cli/exchange", post(auth::exchange_cli_code))
+        .route("/auth/cli/revoke", post(auth::revoke_cli_token))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/auth/verify", post(auth::verify))
@@ -260,7 +263,12 @@ fn class_for_method(method: &Method, path: &str) -> RouteClass {
         RouteClass::PublicDelivery
     } else if matches!(
         path,
-        "/auth/register" | "/auth/login" | "/auth/verify" | "/auth/resend"
+        "/auth/register"
+            | "/auth/login"
+            | "/auth/verify"
+            | "/auth/resend"
+            | "/auth/cli/authorize"
+            | "/auth/cli/exchange"
     ) {
         RouteClass::SensitiveAuth
     } else {
