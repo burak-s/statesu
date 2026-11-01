@@ -31,7 +31,9 @@ function stylesFor(prefix) {
 .${prefix} .statesu-title { margin: 0 0 .5em; }
 .${prefix} .statesu-body { line-height: 1.6; }
 .${prefix} .statesu-body pre { overflow-x: auto; }
-.${prefix} .statesu-body a { text-decoration: underline; }`;
+.${prefix} .statesu-body a { text-decoration: underline; }
+.${prefix} .statesu-announcement + .statesu-announcement { margin-top: 2rem; padding-top: 2rem; border-top: 1px solid currentColor; }
+.${prefix} .statesu-more { margin-top: 1.5rem; font: inherit; color: inherit; background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }`;
 }
 
 function injectStyles(document) {
@@ -106,6 +108,68 @@ async function fetchPostJson(fetch, api, signalTimeoutMs) {
 	}
 }
 
+// Every embed mode shares the same safe Markdown pipeline.
+function renderPost(window, parent, post, render, hideTitle) {
+	const document = window.document;
+	if (!hideTitle) {
+		const heading = element(document, 'h2', 'statesu-title', post.title);
+		parent.appendChild(heading);
+	}
+	const body = element(document, render === null ? 'pre' : 'div',
+		render === null ? 'statesu-embed-fallback statesu-body' : 'statesu-body');
+	if (render === null) {
+		body.textContent = post.content_markdown;
+	} else {
+		body.innerHTML = render(post.content_markdown);
+	}
+	parent.appendChild(body);
+}
+
+function initFeed(window, root, origin, blog, hideTitle, timeoutMs) {
+	const document = window.document;
+	const render = buildRenderer(window);
+	const posts = element(document, 'div', 'statesu-feed');
+	const status = element(document, 'div');
+	root.append(posts, status);
+	const size = 20;
+
+	async function load(page) {
+		showState(status, 'Loading announcements…', false);
+		const url = `${origin}/public/blogs/${encodeURIComponent(blog)}/posts?page=${page}&size=${size}`;
+		const result = await fetchPostJson(window.fetch.bind(window), url, timeoutMs);
+		if (result.error) {
+			showState(status, 'Announcements could not be loaded.', true);
+			const retry = element(document, 'button', 'statesu-more', 'Tekrar dene');
+			retry.type = 'button';
+			retry.addEventListener('click', () => void load(page));
+			status.appendChild(retry);
+			return;
+		}
+		const data = result.post;
+		if (!data || !Array.isArray(data.items) || !Number.isInteger(data.total) || data.total < 0 ||
+			!data.items.every((post) => post && typeof post.title === 'string' && typeof post.content_markdown === 'string')) {
+			showState(status, 'The content API returned an unexpected response.', true);
+			return;
+		}
+		status.textContent = '';
+		for (const post of data.items) {
+			const entry = element(document, 'article', 'statesu-announcement');
+			renderPost(window, entry, post, render, hideTitle);
+			posts.appendChild(entry);
+		}
+		if (page === 1 && data.items.length === 0) {
+			showState(status, 'Henüz duyuru yok.', false);
+		} else if (data.items.length > 0 && page * size < data.total) {
+			const more = element(document, 'button', 'statesu-more', 'Daha fazla');
+			more.type = 'button';
+			more.addEventListener('click', () => void load(page + 1));
+			status.appendChild(more);
+		}
+	}
+
+	void load(1);
+}
+
 /**
  * Resolves the embed's own script element: prefer the currently executing
  * script, fall back to the first configured match, and never pick an
@@ -176,8 +240,13 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 		return;
 	}
 
+	const isLatest = script.dataset.mode === 'latest';
+	const isFeed = script.dataset.mode === 'feed';
+	const hideTitle = script.hasAttribute('data-hide-title');
 	const fixedPost = script.getAttribute('data-post');
-	const resolution = fixedPost === null
+	const resolution = isLatest || isFeed
+		? { kind: 'collection' }
+		: fixedPost === null
 		? resolveSlug(window.location.href, basePath)
 		: validBlogSlug(fixedPost)
 			? { kind: 'post', slug: fixedPost }
@@ -206,10 +275,17 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 		return;
 	}
 
+	if (isFeed) {
+		initFeed(window, root, configured.origin, blog, hideTitle, Math.max(0, timeoutMs));
+		return;
+	}
+
 	showState(root, 'Loading post…', false);
 	const request = fetchPostJson(
 		window.fetch.bind(window),
-		apiUrl(configured.origin, blog, resolution.slug),
+		isLatest
+			? `${configured.origin}/public/blogs/${encodeURIComponent(blog)}/posts?page=1&size=1`
+			: apiUrl(configured.origin, blog, resolution.slug),
 		Math.max(0, timeoutMs)
 	);
 	request
@@ -233,7 +309,15 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 				}
 				return;
 			}
-			const post = result.post;
+			if (isLatest && !Array.isArray(result.post?.items)) {
+				showState(root, 'The content API returned an unexpected response.', true);
+				return;
+			}
+			if (isLatest && result.post.items.length === 0) {
+				root.textContent = '';
+				return;
+			}
+			const post = isLatest ? result.post.items[0] : result.post;
 			if (
 				!post ||
 				typeof post.content_markdown !== 'string' ||
@@ -244,20 +328,7 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 			}
 			const render = buildRenderer(window);
 			root.textContent = '';
-			const heading = element(document, 'h2', 'statesu-title');
-			heading.textContent = post.title;
-			root.appendChild(heading);
-			if (render === null) {
-				// Fail closed: no safe pipeline, no HTML. Show the raw Markdown
-				// as inert text instead of skipping content.
-				const body = element(document, 'pre', 'statesu-embed-fallback statesu-body');
-				body.textContent = post.content_markdown;
-				root.appendChild(body);
-				return;
-			}
-			const body = element(document, 'div', 'statesu-body');
-			body.innerHTML = render(post.content_markdown);
-			root.appendChild(body);
+			renderPost(window, root, post, render, hideTitle);
 		});
 }
 

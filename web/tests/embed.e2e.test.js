@@ -81,6 +81,114 @@ test('invalid data-post never fetches or falls back to the page slug', async () 
 	}
 });
 
+test('latest mode renders only the newest body without a title', async () => {
+	let requested;
+	const { target } = await boot({
+		url: 'https://site.example/',
+		scriptAttrs: { 'data-mode': 'latest', 'data-hide-title': '', 'data-post': 'ignored' },
+		fetchBehavior: async (api) => {
+			requested = api;
+			return { ok: true, json: async () => ({ total: 2, items: [
+				{ title: 'Newest title', content_markdown: '**Newest**\n\n<script>evil()</script>' },
+				{ title: 'Older title', content_markdown: '_Older_' }
+			] }) };
+		}
+	});
+	assert.equal(requested, 'https://statesu.example/public/blogs/burak/posts?page=1&size=1');
+	assert.equal(target.querySelectorAll('.statesu-body').length, 1);
+	assert.equal(target.querySelector('.statesu-body strong').textContent, 'Newest');
+	assert.ok(!target.textContent.includes('Older'));
+	assert.equal(target.querySelectorAll('.statesu-title, script, button').length, 0);
+	assert.ok(!target.textContent.includes('title'));
+});
+
+test('latest mode stays empty when there are no published announcements', async () => {
+	const { target } = await boot({
+		url: 'https://site.example/',
+		scriptAttrs: { 'data-mode': 'latest', 'data-hide-title': '' },
+		fetchBehavior: async () => ({ ok: true, json: async () => ({ items: [], total: 0 }) })
+	});
+	assert.equal(target.textContent, '');
+	assert.equal(target.querySelectorAll('.statesu-body, button').length, 0);
+});
+
+test('latest mode rejects invalid responses and handles network errors safely', async () => {
+	for (const [fetchBehavior, message] of [
+		[async () => ({ ok: true, json: async () => ({}) }), /unexpected response/],
+		[async () => ({ ok: true, json: async () => ({ items: [{ title: 'Bad' }], total: 1 }) }), /unexpected response/],
+		[async () => { throw new Error('offline'); }, /could not be reached/]
+	]) {
+		const { target } = await boot({ url: 'https://site.example/', scriptAttrs: { 'data-mode': 'latest' }, fetchBehavior });
+		assert.match(target.textContent, message);
+		assert.equal(target.querySelectorAll('.statesu-body').length, 0);
+	}
+});
+
+test('feed mode renders all announcement bodies without titles on /takes', async () => {
+	let requested;
+	const { target } = await boot({
+		url: 'https://site.example/takes',
+		scriptAttrs: { 'data-mode': 'feed', 'data-hide-title': '' },
+		fetchBehavior: async (api) => {
+			requested = api;
+			return { ok: true, json: async () => ({ total: 2, items: [
+				{ title: 'Newest title', content_markdown: '**Newest**\n\n<script>evil()</script>' },
+				{ title: 'Older title', content_markdown: '_Older_' }
+			] }) };
+		}
+	});
+	assert.equal(requested, 'https://statesu.example/public/blogs/burak/posts?page=1&size=20');
+	assert.deepEqual([...target.querySelectorAll('.statesu-body')].map((body) => body.textContent.trim()), ['Newest', 'Older']);
+	assert.equal(target.querySelectorAll('.statesu-title, script, button').length, 0);
+});
+
+test('feed pagination retries failed pages without losing or duplicating entries', async () => {
+	let failSecond = true;
+	const { target } = await boot({
+		url: 'https://site.example/takes',
+		scriptAttrs: { 'data-mode': 'feed', 'data-hide-title': '' },
+		fetchBehavior: async (api) => {
+			const page = Number(new URL(api).searchParams.get('page'));
+			if (page === 2 && failSecond) { failSecond = false; throw new Error('offline'); }
+			return { ok: true, json: async () => ({ total: 21, items: Array.from(
+				{ length: page === 1 ? 20 : 1 }, (_, i) => ({ title: 'Hidden', content_markdown: `${page}-${i}` })
+			) }) };
+		}
+	});
+	target.querySelector('button').click();
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	assert.equal(target.querySelectorAll('.statesu-body').length, 20);
+	assert.match(target.textContent, /could not be loaded/);
+	target.querySelector('button').click();
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	assert.equal(target.querySelectorAll('.statesu-body').length, 21);
+	assert.equal(target.querySelectorAll('button, .statesu-title').length, 0);
+});
+
+test('feed handles empty and malformed lists safely', async () => {
+	for (const [data, message] of [
+		[{ items: [], total: 0 }, /Henüz duyuru yok/],
+		[{ items: [{ title: 'Missing body' }], total: 1 }, /unexpected response/]
+	]) {
+		const { target } = await boot({
+			url: 'https://site.example/takes', scriptAttrs: { 'data-mode': 'feed' },
+			fetchBehavior: async () => ({ ok: true, json: async () => data })
+		});
+		assert.match(target.textContent, message);
+		assert.equal(target.querySelectorAll('.statesu-body').length, 0);
+	}
+});
+
+test('data-hide-title also hides the title of a fixed post', async () => {
+	const { target } = await boot({
+		url: 'https://site.example/',
+		scriptAttrs: { 'data-post': 'guncel', 'data-hide-title': '' },
+		fetchBehavior: async () => ({ ok: true, json: async () => ({ title: 'Hidden', content_markdown: 'Visible' }) })
+	});
+	assert.equal(target.querySelectorAll('.statesu-title').length, 0);
+	assert.equal(target.textContent.trim(), 'Visible');
+});
+
 test('404 renders a plain not-found state; irrelevant pages stay untouched', async () => {
 	const { target } = await boot({
 		url: 'https://site.example/blog/missing',
