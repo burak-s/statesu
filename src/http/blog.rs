@@ -35,6 +35,15 @@ pub async fn update(
     Ok(Json(state.blogs.update(user.id, &blog_id, &body).await?))
 }
 
+pub async fn delete(
+    State(state): State<AppState>,
+    AuthedWriter(user): AuthedWriter,
+    Path(blog_id): Path<String>,
+) -> Result<StatusCode, Error> {
+    state.blogs.delete(user.id, &blog_id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn set_origins(
     State(state): State<AppState>,
     AuthedWriter(user): AuthedWriter,

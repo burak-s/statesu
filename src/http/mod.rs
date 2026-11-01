@@ -78,7 +78,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/auth/pats/{pat_id}", delete(auth::delete_pat))
         .route("/auth/sessions", delete(auth::logout_all))
         .route("/blogs", post(blog::create).get(blog::list))
-        .route("/blogs/{blog_id}", patch(blog::update))
+        .route("/blogs/{blog_id}", patch(blog::update).delete(blog::delete))
         .route("/blogs/{blog_id}/origins", put(blog::set_origins))
         .route("/blogs/{blog_id}/posts", post(post::create).get(post::list))
         .route(

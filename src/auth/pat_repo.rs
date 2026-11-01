@@ -19,7 +19,7 @@ pub struct NewPat {
     pub name: String,
     pub scopes: String,
     pub created_at: i64,
-    pub expires_at: i64,
+    pub expires_at: Option<i64>,
 }
 
 /// One non-secret PAT row, shaped for both the repository and the API.
@@ -29,7 +29,7 @@ pub struct PatRecord {
     pub name: String,
     pub scopes: String,
     pub created_at: i64,
-    pub expires_at: i64,
+    pub expires_at: Option<i64>,
     pub last_used_at: Option<i64>,
 }
 
@@ -71,7 +71,7 @@ impl PatRepository {
         now_unix: i64,
     ) -> Result<Option<(uuid::Uuid, String)>, Error> {
         let row = sqlx::query_as::<_, TokenOwnerRow>(
-            "SELECT user_id, scopes FROM pats WHERE token_hash = ? AND expires_at > ?",
+            "SELECT user_id, scopes FROM pats WHERE token_hash = ? AND (expires_at IS NULL OR expires_at > ?)",
         )
         .bind(token_hash.as_slice())
         .bind(now_unix)
@@ -139,7 +139,7 @@ impl PatRepository {
 
     /// ActivePAT cap per account; checked before minting a new token.
     pub async fn count_active(&self, user_id: &uuid::Uuid, now_unix: i64) -> Result<i64, Error> {
-        sqlx::query_scalar("SELECT COUNT(*) FROM pats WHERE user_id = ? AND expires_at > ?")
+        sqlx::query_scalar("SELECT COUNT(*) FROM pats WHERE user_id = ? AND (expires_at IS NULL OR expires_at > ?)")
             .bind(user_id.to_string())
             .bind(now_unix)
             .fetch_one(&self.pool)
@@ -160,7 +160,7 @@ struct PatRow {
     name: String,
     scopes: String,
     created_at: i64,
-    expires_at: i64,
+    expires_at: Option<i64>,
     last_used_at: Option<i64>,
 }
 

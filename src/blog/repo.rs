@@ -141,6 +141,20 @@ impl BlogRepository {
         Ok(())
     }
 
+    /// Deleting a blog cascades to its posts and allowed origins.
+    pub async fn delete(&self, id: &uuid::Uuid, owner_id: &uuid::Uuid) -> Result<(), Error> {
+        let result = sqlx::query("DELETE FROM blogs WHERE id = ? AND owner_id = ?")
+            .bind(id.to_string())
+            .bind(owner_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|_| failed("blog delete"))?;
+        if result.rows_affected() != 1 {
+            return Err(Error::BlogNotFound);
+        }
+        Ok(())
+    }
+
     /// Replaces the whole origin list atomically.
     pub async fn replace_origins(
         &self,

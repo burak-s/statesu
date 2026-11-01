@@ -29,10 +29,7 @@ pub struct AuthService {
     public_url: crate::config::PublicUrl,
 }
 
-/// Personal access token lifetime bounds (days) and per-account quota.
-pub const PAT_MIN_DAYS: i64 = 1;
-pub const PAT_MAX_DAYS: i64 = 90;
-pub const PAT_DEFAULT_DAYS: i64 = 30;
+/// Personal access token per-account quota.
 pub const PAT_MAX_ACTIVE: i64 = 20;
 pub const PAT_MAX_NAME_LEN: usize = 64;
 
@@ -287,13 +284,13 @@ impl AuthService {
         user_id: &uuid::Uuid,
         name: &str,
         scopes: PatScopes,
-        days: i64,
+        expires_at: Option<i64>,
     ) -> Result<PatOutcome, Error> {
         let name = name.trim();
         if name.is_empty() || name.len() > PAT_MAX_NAME_LEN {
             return Err(Error::InvalidInput);
         }
-        if !(PAT_MIN_DAYS..=PAT_MAX_DAYS).contains(&days) {
+        if expires_at.is_some_and(|expiry| expiry <= self.clock.now()) {
             return Err(Error::InvalidInput);
         }
         let limit_reached =
@@ -306,7 +303,6 @@ impl AuthService {
         let id = uuid::Uuid::now_v7();
         let secret = token::generate(token::PAT_PREFIX)?;
         let token_hash = token::hash(&secret);
-        let expires_at = now.saturating_add(days.saturating_mul(24 * 60 * 60));
         self.pats
             .create(
                 NewPat {

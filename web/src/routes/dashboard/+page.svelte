@@ -13,12 +13,14 @@
 	let canResend = $state(false);
 
 	// Personal access tokens -------------------------------------------------
-	/** @type {{ id: string, name: string, scopes: string, created_at: number, expires_at: number, last_used_at: number|null, delete_warned?: boolean }[]} */
+	/** @type {{ id: string, name: string, scopes: string, created_at: number, expires_at: number|null, last_used_at: number|null, delete_warned?: boolean }[]} */
 	let pats = $state([]);
 	let patName = $state('');
 	let patWrite = $state(false);
+	let patNeverExpires = $state(true);
+	let patExpiry = $state('');
 	let patError = $state('');
-	/** @type {null | { id: string, name: string, scopes: string, created_at: number, expires_at: number, secret: string }} */
+	/** @type {null | { id: string, name: string, scopes: string, created_at: number, expires_at: number|null, secret: string }} */
 	let freshPat = $state(null); // secret shown exactly once
 	let patBusy = $state(false);
 
@@ -54,6 +56,10 @@
 	let newBlogName = $state('');
 	let newBlogSlug = $state('');
 	let newBlogError = $state('');
+	/** @type {string|null} */
+	let deleteBlogId = $state(null);
+	let blogDeleteError = $state('');
+	let blogDeleteBusy = $state(false);
 
 	// Blog settings ----------------------------------------------------------
 	let domainDraft = $state('');
@@ -168,10 +174,15 @@
 			patError = 'Give the token a name you will recognize later.';
 			return;
 		}
+		const expiresAt = patNeverExpires ? null : Math.floor(new Date(patExpiry).getTime() / 1000);
+		if (expiresAt !== null && (!Number.isFinite(expiresAt) || expiresAt <= Date.now() / 1000)) {
+			patError = 'Choose an expiration date and time in the future.';
+			return;
+		}
 		patBusy = true;
 		const result = await request('/auth/pats', {
 			method: 'POST',
-			body: { name: patName.trim(), write: patWrite }
+			body: { name: patName.trim(), write: patWrite, expires_at: expiresAt }
 		});
 		patBusy = false;
 		if (!result.ok) {
@@ -182,10 +193,12 @@
 		freshPat = result.data; // `secret` is shown exactly once, now
 		patName = '';
 		patWrite = false;
+		patNeverExpires = true;
+		patExpiry = '';
 		await refreshPats();
 	}
 
-	/** @param {{ id: string, name: string, scopes: string, created_at: number, expires_at: number, last_used_at: number|null, delete_warned?: boolean }} pat */
+	/** @param {{ id: string, name: string, scopes: string, created_at: number, expires_at: number|null, last_used_at: number|null, delete_warned?: boolean }} pat */
 	async function deletePat(pat) {
 		if (!pat.delete_warned) {
 			pat.delete_warned = true;
@@ -223,13 +236,17 @@
 			return;
 		}
 		blogs = result.data;
-		await selectBlog(selectedBlogId ?? blogs[0]?.id ?? null);
+		const nextId = blogs.some((blog) => blog.id === selectedBlogId)
+			? selectedBlogId : blogs[0]?.id ?? null;
+		await selectBlog(nextId, view);
 	}
 
-	/** @param {string|null} id */
-	async function selectBlog(id) {
+	/** @param {string|null} id @param {'blogs'|'posts'|'settings'|'tokens'} nextView */
+	async function selectBlog(id, nextView = 'posts') {
 		selectedBlogId = id;
-		view = 'posts';
+		view = nextView;
+		deleteBlogId = null;
+		blogDeleteError = '';
 		posts = [];
 		postsError = '';
 		editor = null;
@@ -266,6 +283,45 @@
 		await listBlogs();
 	}
 
+	/** @param {{ id: string }} blog */
+	async function deleteBlog(blog) {
+		if (blogDeleteBusy) return;
+		if (deleteBlogId !== blog.id) {
+			deleteBlogId = blog.id;
+			blogDeleteError = '';
+			return;
+		}
+		blogDeleteBusy = true;
+		blogDeleteError = '';
+		const result = await request(`/blogs/${blog.id}`, { method: 'DELETE' });
+		blogDeleteBusy = false;
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			blogDeleteError = result.error;
+			return;
+		}
+		view = 'blogs';
+		deleteBlogId = null;
+		await listBlogs();
+	}
+
+	async function removeDomain() {
+		if (!selectedBlogId) return;
+		settingsError = '';
+		settingsSaved = false;
+		const result = await request(`/blogs/${selectedBlogId}`, {
+			method: 'PATCH', body: { domain: null }
+		});
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			settingsError = result.error;
+			return;
+		}
+		blogs = blogs.map((blog) => blog.id === result.data.id ? result.data : blog);
+		domainDraft = '';
+		settingsSaved = true;
+	}
+
 	async function saveSettings() {
 		settingsError = '';
 		settingsSaved = false;
@@ -295,8 +351,8 @@
 				return;
 			}
 		}
-		settingsSaved = true;
 		await listBlogs();
+		settingsSaved = true;
 	}
 
 	function startDraftPost() {
@@ -401,9 +457,11 @@
 	<meta name="robots" content="noindex" />
 </svelte:head>
 
+<main class="dashboard">
 {#if !me}
 	<section class="narrow">
-		<h1>Sign in</h1>
+		<a class="auth-brand" href="/">Statesu / Dashboard</a>
+		<h1>{authMode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
 		<p>Manage your blogs and Markdown posts from here. Browsers without a session see the <a href="/">API documentation</a>.</p>
 		{#if notice}
 			<p class="ok" role="status">{notice}</p>
@@ -441,6 +499,7 @@
 				<a class="brand" href="/">Statesu</a>
 				<span class="email">{me.email}</span>
 			</div>
+			<div class="menu-label">Workspace</div>
 			<nav class="items" aria-label="Sections">
 				{#each VIEWS as item (item.id)}
 					<button
@@ -449,15 +508,24 @@
 						aria-current={view === item.id ? 'page' : undefined}
 						onclick={() => openView(item.id)}
 					>
-						{#if item.needsBlog && selectedBlog}<span class="bull">·</span>{/if}
-						{item.label}
+						<span>{item.label}</span>
+						{#if item.id === 'blogs'}<span class="nav-count">{blogs.length}</span>{/if}
 					</button>
 				{/each}
 			</nav>
-			<button type="button" class="link signout" onclick={signOut}>Sign out</button>
+			<div class="menu-footer">
+				<a href="/">API documentation ↗</a>
+				<button type="button" class="link signout" onclick={signOut}>Sign out</button>
+			</div>
 		</aside>
 
-		<section class="content">
+		<section class="content" aria-label="Dashboard content">
+			<header class="content-header">
+				<span class="eyebrow">Dashboard / {VIEWS.find((item) => item.id === view)?.label}</span>
+				{#if selectedBlog && (view === 'posts' || view === 'settings')}
+					<span class="current-blog">{selectedBlog.name}</span>
+				{/if}
+			</header>
 			{#if view === 'blogs'}
 				<div class="view">
 					<h2>Blogs</h2>
@@ -465,17 +533,34 @@
 					{#if blogs.length === 0}
 						<p>No blogs yet. Create your first one below:</p>
 					{:else}
-						<ul class="blog-list">
-							{#each blogs as blog (blog.id)}
-								<li>
-									<button type="button" class="blog-link" aria-current={blog.id === selectedBlogId ? 'true' : undefined} onclick={() => selectBlog(blog.id)}>
-										{blog.name}
-										<code>/public/blogs/{blog.slug}</code>
-									</button>
-								</li>
-							{/each}
-						</ul>
+						<div class="table-scroll">
+							<table class="blogs-table" aria-label="Blogs">
+								<thead><tr><th scope="col">Blog</th><th scope="col">Slug</th><th scope="col">Domain</th><th scope="col">Actions</th></tr></thead>
+								<tbody>
+									{#each blogs as blog (blog.id)}
+										<tr>
+											<td><button type="button" class="link blog-name" onclick={() => selectBlog(blog.id)}>{blog.name}</button></td>
+											<td><code>{blog.slug}</code></td>
+											<td>{blog.domain ?? '—'}</td>
+											<td class="actions">
+												<button type="button" class="link" aria-label={`Settings for ${blog.name}`} onclick={() => selectBlog(blog.id, 'settings')}>Settings</button>
+												<button type="button" class="link" aria-label={`${deleteBlogId === blog.id ? 'Confirm deletion of' : 'Delete'} ${blog.name}`} disabled={blogDeleteBusy} onclick={() => deleteBlog(blog)}>
+													{deleteBlogId === blog.id ? 'Confirm deletion' : 'Delete'}
+												</button>
+											</td>
+										</tr>
+										{#if deleteBlogId === blog.id}
+											<tr class="delete-confirmation"><td colspan="4">
+												<p role="alert">Permanently delete “{blog.name}”, all its posts, domain and allowed origins? This cannot be undone.</p>
+												<button type="button" class="link" disabled={blogDeleteBusy} onclick={() => { deleteBlogId = null; blogDeleteError = ''; }}>Cancel</button>
+											</td></tr>
+										{/if}
+									{/each}
+								</tbody>
+							</table>
+						</div>
 					{/if}
+					{#if blogDeleteError}<p class="error" role="alert">{blogDeleteError}</p>{/if}
 					<h3>New blog</h3>
 					<form class="stack" onsubmit={createBlog} aria-label="Create a blog">
 						<label for="blog-name">Name</label>
@@ -489,20 +574,22 @@
 			{:else if view === 'posts'}
 				<div class="view">
 					<h2>Posts</h2>
-					<p>Public API: <code>/public/blogs/{selectedBlog?.slug}</code> — published posts are readable by anyone; drafts stay private.</p>
+					<p>{#if selectedBlog}Public API: <code>/public/blogs/{selectedBlog.slug}</code> — {/if}Published posts are readable by anyone; drafts stay private.</p>
 					{#if !selectedBlog}
 						<p class="note">Create a blog in <button type="button" class="link" onclick={() => openView('blogs')}>Blogs</button> first.</p>
 					{:else}
+						<div class="toolbar">
+							<div class="blog-select">
 							<label for="post-blog">Blog</label>
-						<div class="row">
 							<select id="post-blog" bind:value={selectedBlogId} onchange={() => selectBlog(selectedBlogId)}>
 								{#each blogs as blog (blog.id)}
 									<option value={blog.id}>{blog.name}</option>
 								{/each}
 							</select>
+							</div>
+							<button type="button" onclick={startDraftPost}>+ New post</button>
 						</div>
 						{#if postsError}<p class="error" role="alert">{postsError}</p>{/if}
-						<div class="row"><button type="button" onclick={startDraftPost}>New post</button></div>
 						{#if posts.length === 0}
 							<p>Nothing here yet.</p>
 						{:else}
@@ -564,6 +651,10 @@
 						<form class="stack" onsubmit={(e) => { e.preventDefault(); saveSettings(); }}>
 							<label for="blog-domain">Domain (optional)</label>
 							<input id="blog-domain" bind:value={domainDraft} placeholder="example.com" />
+							{#if selectedBlog.domain}
+								<div><button type="button" class="link" onclick={removeDomain}>Remove domain</button></div>
+							{/if}
+							<p>Clear the domain and save to remove it, or use Remove domain. Allowed origins are managed separately.</p>
 							<label for="blog-origins">Allowed origins</label>
 							<textarea id="blog-origins" rows="4" bind:value={originsDraft} placeholder={'https://example.com\nhttp://localhost:5173'}></textarea>
 							<div><button type="submit">Save settings</button></div>
@@ -575,7 +666,7 @@
 			{:else}
 				<div class="view">
 					<h2>API tokens</h2>
-					<p>Personal access tokens let CLI tools and scripts call the content API on your behalf with <code>Authorization: Bearer …</code>. They are shown once, expire, and can be revoked anytime. Browsers should use your session, never a token.</p>
+					<p>Personal access tokens let CLI tools and scripts call the content API on your behalf with <code>Authorization: Bearer …</code>. They are shown once, can have an expiration date or never expire, and can be revoked anytime. Browsers should use your session, never a token.</p>
 				</div>
 				<div class="view">
 					{#if freshPat}
@@ -596,7 +687,7 @@
 											<td>{pat.name}</td>
 											<td><span class="pill">{pat.scopes}</span></td>
 											<td>{formatTimestamp(pat.created_at)}</td>
-											<td>{formatTimestamp(pat.expires_at)}</td>
+											<td>{pat.expires_at === null ? 'Never' : formatTimestamp(pat.expires_at)}</td>
 											<td>{formatTimestamp(pat.last_used_at)}</td>
 											<td class="actions">
 												<button type="button" class="link" onclick={() => deletePat(pat)}>Revoke</button>
@@ -612,6 +703,16 @@
 						<label for="pat-name">Name</label>
 						<input id="pat-name" bind:value={patName} placeholder="ci-script" maxlength="64" required />
 						<label class="check">
+							<input type="checkbox" bind:checked={patNeverExpires} />
+							Never expires
+						</label>
+						{#if patNeverExpires}
+							<p>This token stays valid until revoked. An expiration date is recommended for security.</p>
+						{:else}
+							<label for="pat-expiry">Expiration date and time (your local time)</label>
+							<input id="pat-expiry" type="datetime-local" bind:value={patExpiry} required />
+						{/if}
+						<label class="check">
 							<input type="checkbox" bind:checked={patWrite} />
 							Allow writing (create and edit blogs and posts)
 						</label>
@@ -622,18 +723,32 @@
 		</section>
 	</div>
 {/if}
+</main>
 
 <style>
-	/* The global stylesheet caps `main` at 920px for docs pages. The dashboard
-	   ships its own CSS (this same rule only loads on this page) and is an
-	   application, so it claims the full width minus comfortable gutters. */
-	:global(main) { width: min(100% - 48px, 1480px); margin-inline: auto; }
+	/* Keep documentation layout rules out of the dashboard workspace. */
+	.dashboard { width: min(100% - 96px, 1440px); margin-inline: auto; color: #000; background: #fff; }
+	.dashboard p, .dashboard ul, .dashboard code { color: inherit; }
+	.dashboard :focus-visible { outline: 2px solid #000; outline-offset: 5px; }
+	.dashboard section { padding: 0; border: 0; }
+	.content-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding-bottom: 24px; margin-bottom: 32px; }
+	.content-header .eyebrow { font-size: 10px; }
+	.current-blog { font-size: 12px; font-weight: 600; padding: 4px 10px; overflow-wrap: anywhere; }
+	.menu-label { margin: 8px 12px -12px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; }
+	.nav-count { margin-left: auto; font-size: 11px; }
+	.menu-footer { display: grid; gap: 14px; margin-top: 32px; padding: 20px 12px 0; font-size: 12px; }
+	.menu-footer a { color: inherit; text-decoration: none; }
+	.toolbar { display: flex; justify-content: space-between; align-items: end; gap: 20px; margin: 20px 0; }
+	.blog-select { display: grid; gap: 8px; flex: 1; max-width: 320px; }
+	.auth-brand { font-size: 12px; font-weight: 700; }
+	.narrow h1 { font-size: clamp(28px, 4vw, 40px); margin: 28px 0 16px; }
 
 	.shell {
 		display: grid;
-		grid-template-columns: 240px minmax(0, 1fr);
-		gap: 48px;
-		padding-block: 32px 200px;
+		grid-template-columns: 228px minmax(0, 1fr);
+		gap: clamp(32px, 4vw, 64px);
+		padding-block: 48px 96px;
+		min-height: 100dvh;
 		align-items: start;
 	}
 	.menu {
@@ -643,81 +758,107 @@
 		flex-direction: column;
 		gap: 24px;
 		min-width: 0;
-		border: 1px solid var(--border);
-		border-radius: 6px;
-		padding: 20px;
+		padding: 24px 12px 20px;
 		background: #fff;
 	}
-	.identity { display: grid; gap: 4px; }
+	.identity { display: grid; gap: 6px; padding-inline: 12px; }
 	.identity .brand { font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; color: inherit; text-decoration: none; }
-	.email { font-size: 12px; color: #6e6e6e; word-break: break-all; }
+	.email { font-size: 12px; word-break: break-all; }
 	.items { display: grid; gap: 2px; }
 	.item {
 		display: flex; align-items: center; gap: 8px;
 		width: 100%; text-align: left;
-		background: none; border: 0; border-radius: 4px;
-		padding: 9px 12px;
+		background: none; border: 0; border-radius: 0;
+		padding: 11px 12px;
 		font: inherit; color: inherit; cursor: pointer;
 	}
-	.item:hover { background: #f5f5f5; }
-	.item[aria-current='page'] { background: #171717; color: #fff; font-weight: 600; }
-	.item .bull { opacity: .55; font-weight: 700; }
+	.item:hover { text-decoration: underline; text-underline-offset: 4px; }
+	.item[aria-current='page'] { background: #000; color: #fff; font-weight: 600; }
 	.signout { margin-top: auto; text-align: left; }
-	.content { min-width: 0; }
-	.view { display: grid; gap: 6px; align-content: start; }
-	.view h2 { margin: 0; margin-bottom: 6px; }
-	.view h3 { margin: 18px 0 0; }
-	.mt { margin-top: 28px; }
+	.content { min-width: 0; padding-block: 8px; }
+	.view { display: grid; gap: 16px; align-content: start; }
+	.view + .view { margin-top: 32px; padding-top: 28px; }
+	.view h2 { margin: 0; font-size: 30px; }
+	.view h3 { margin: 20px 0 0; font-size: 18px; }
+	.view p { margin: 0; font-size: 14px; line-height: 1.8; }
+	.view > h3 { padding-top: 24px; }
+	.view .mt { margin-top: 28px; }
 
-	.narrow { padding-block: 40px 200px; }
-	.narrow form { margin-block: 24px; }
-	.stack { display: grid; gap: 6px; margin-block: 8px; }
-	.stack input, .stack textarea, .editor input, .editor textarea {
-		font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: #fff; color: inherit; width: 100%;
+	.dashboard .narrow { max-width: 480px; margin: 80px auto; padding: 32px; }
+	.narrow p { font-size: 14px; }
+	.narrow form { margin-top: 28px; }
+	.stack { display: grid; gap: 10px; margin-block: 8px; max-width: 640px; }
+	.stack > label:not(:first-child) { margin-top: 12px; }
+	label { font-size: 12px; font-weight: 600; }
+	.editor .stack { max-width: none; }
+	.stack input, .stack textarea, .editor input, .editor textarea, select {
+		font: inherit; font-size: 14px; padding: 11px 14px; border: 0; border-radius: 0; background: #000; color: #fff; width: 100%; min-width: 0; accent-color: #000;
 	}
-	select {
-		font: inherit; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: #fff; color: inherit;
-	}
+	input::placeholder, textarea::placeholder { color: #fff; opacity: 1; }
+	.check input { appearance: none; width: 16px; height: 16px; padding: 0; flex: 0 0 16px; background: #000; cursor: pointer; }
+	.check input:checked::after { content: '✓'; display: block; color: #fff; font-size: 12px; line-height: 16px; text-align: center; }
 	.stack textarea, .editor textarea { font-family: var(--mono); font-size: 13px; resize: vertical; }
-	.row { display: flex; gap: 16px; align-items: end; margin-block: 12px 6px; }
+	.row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-block: 12px 6px; }
 	.row.wide { align-items: start; }
 	.row.wide span { display: grid; gap: 4px; min-width: 0; flex: 1; }
 	.check { display: flex; gap: 8px; align-items: center; }
 	.check input { width: auto; }
-	button { font: inherit; padding: 8px 18px; border: 1px solid #171717; border-radius: 4px; background: #171717; color: #fff; cursor: pointer; }
+	button { font: inherit; font-size: 13px; font-weight: 600; line-height: 1.6; padding: 11px 18px; border: 0; border-radius: 0; background: #000; color: #fff; cursor: pointer; }
+	button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 4px; }
 	button.link { background: none; border: 0; color: inherit; padding: 0; text-decoration: underline; text-underline-offset: 4px; }
-	button:disabled { opacity: .45; cursor: default; }
-	.error { color: #171717; background: #f2f2f2; padding: 10px 12px; border-left: 3px solid #171717; }
-	.ok { color: #171717; }
-	.note { color: #6e6e6e; }
-	.secret { display: inline-block; font-family: var(--mono); font-size: 13px; background: #f2f2f2; padding: 6px 10px; word-break: break-all; }
-	.blog-list { list-style: none; padding: 0; margin: 0 0 24px; display: grid; gap: 6px; }
-	.blog-link { display: block; text-align: left; width: 100%; background: none; color: inherit; border: 1px solid var(--border); border-radius: 4px; padding: 10px 12px; }
+	button:disabled { cursor: not-allowed; text-decoration: line-through; }
+	.view .error, .narrow .error { color: #fff; background: #000; padding: 10px 12px; }
+	.ok { font-weight: 600; }
+	.secret { display: inline-block; font-family: var(--mono); font-size: 13px; padding: 6px 10px; word-break: break-all; }
+	.blogs-table { width: 100%; text-align: left; }
+	.blogs-table th, .blogs-table td { vertical-align: top; border-bottom: 1px solid #ddd; }
+	.blogs-table td:not(.actions) { overflow-wrap: anywhere; max-width: 280px; }
+	.blog-name { text-align: left; }
+	.delete-confirmation td { background: #f5f5f5; }
+	.delete-confirmation button { margin-top: 8px; }
 	.narrow a { color: inherit; text-decoration: underline; text-underline-offset: 4px; }
 	.identity .brand { text-decoration: none; }
-	.blog-link code { display: block; font-size: 11px; color: #6e6e6e; }
-	.blog-link[aria-current='true'] { border-color: #171717; box-shadow: inset 3px 0 0 #171717; font-weight: 600; }
-	.pill { display: inline-block; border: 1px solid #171717; border-radius: 999px; padding: 1px 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-	.actions { display: flex; gap: 14px; white-space: nowrap; }
-	.editor { margin-top: 32px; border-top: 1px solid var(--border); padding-top: 24px; }
-	.table-scroll { overflow-x: auto; }
+	.pill { display: inline-block; padding: 1px 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+	.actions { white-space: nowrap; }
+	.actions button + button { margin-left: 14px; }
+	.editor { margin-top: 32px; padding-top: 24px; }
+	.table-scroll { overflow-x: auto; margin: 8px 0; }
+	table { font-size: 12px; }
+	th, td { padding: 16px; border: 0; }
+	th { color: #000; font-size: 10px; }
+	td:first-child { min-width: 140px; }
+	td:nth-child(2) { white-space: normal; min-width: 160px; }
 
-	/* Mobile: the sidebar becomes a sticky horizontal tab strip. */
+	/* Keep navigation readable without squeezing the content on smaller screens. */
 	@media (max-width: 900px) {
-		:global(main) { width: calc(100% - 32px); }
-		.shell { grid-template-columns: 1fr; gap: 16px; }
+		.dashboard { width: calc(100% - 48px); }
+		.shell { grid-template-columns: 1fr; gap: 28px; padding-block: 24px 64px; }
+		.menu-label { display: none; }
 		.menu {
-			position: sticky;
-			top: 0;
+			position: static;
 			z-index: 10;
 			flex-direction: row;
+			flex-wrap: wrap;
 			align-items: center;
 			gap: 12px;
 			padding: 10px 12px;
 		}
-		.email { display: none; }
-		.items { display: flex; gap: 4px; flex: 1; overflow-x: auto; }
+		.identity { flex: 1; }
+		.items { display: flex; flex-wrap: nowrap; gap: 4px; width: 100%; overflow-x: auto; }
+		.item { width: auto; flex: 1 0 auto; justify-content: center; white-space: nowrap; }
+		.menu-footer { display: flex; margin: 0; padding: 4px 12px; border: 0; width: 100%; justify-content: space-between; }
 		.identity .brand { font-size: 12px; }
 		.signout { margin-top: 0; white-space: nowrap; }
+	}
+	@media (max-width: 540px) {
+		.dashboard { width: calc(100% - 32px); }
+		.shell { padding-top: 16px; gap: 24px; }
+		.content-header { margin-bottom: 24px; padding-bottom: 16px; }
+		.dashboard .narrow { margin-block: 24px; padding: 24px; }
+		.row.wide { flex-direction: column; align-items: stretch; }
+		.toolbar { flex-wrap: wrap; align-items: stretch; }
+		.blog-select { max-width: none; flex-basis: 100%; }
+		.toolbar > button { width: 100%; }
+		.item { padding-inline: 10px; font-size: 12px; }
 	}
 </style>

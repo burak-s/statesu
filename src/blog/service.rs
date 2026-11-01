@@ -188,6 +188,11 @@ impl BlogService {
         self.blog_response(blog).await
     }
 
+    pub async fn delete(&self, owner_id: Uuid, blog_id_param: &str) -> Result<(), Error> {
+        let blog_id = parse_uuid_v7(blog_id_param)?;
+        self.blogs.delete(&blog_id, &owner_id).await
+    }
+
     /// Replaces the whole origin list with normalized values; the blog must
     /// belong to the caller.
     pub async fn set_origins(

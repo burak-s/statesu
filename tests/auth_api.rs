@@ -538,6 +538,112 @@ async fn personal_access_tokens_flow_the_content_api() {
 }
 
 #[tokio::test]
+async fn pats_support_exact_expiration_dates_and_no_expiration() {
+    let app = TestApp::new().await;
+    common::register_and_verify(&app, EMAIL, PASSWORD).await;
+    let (session, csrf) = login_session(&app, EMAIL, PASSWORD).await;
+    let expiry = NOW + 120 * 86400 + 123;
+    let mut secrets = Vec::new();
+    for body in [
+        json!({ "name": "dated", "expires_at": expiry }),
+        json!({ "name": "infinite", "expires_at": null }),
+        json!({ "name": "omitted" }),
+    ] {
+        let response = app
+            .send(session_authorized(
+                json_request(Method::POST, "/auth/pats", body),
+                &session,
+                &csrf,
+            ))
+            .await;
+        assert_eq!(response.status, StatusCode::CREATED, "{}", response.text());
+        let data = response.json();
+        assert_eq!(
+            data["expires_at"],
+            if secrets.is_empty() {
+                json!(expiry)
+            } else {
+                json!(null)
+            }
+        );
+        secrets.push(data["secret"].as_str().unwrap().to_owned());
+    }
+    for expiry in [NOW - 1, NOW, 0] {
+        app.send(session_authorized(
+            json_request(
+                Method::POST,
+                "/auth/pats",
+                json!({ "name": "bad", "expires_at": expiry }),
+            ),
+            &session,
+            &csrf,
+        ))
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid input");
+    }
+    let listed = app
+        .send(session_authorized(
+            empty(Method::GET, "/auth/pats"),
+            &session,
+            &csrf,
+        ))
+        .await;
+    let records = listed.json();
+    let records = records.as_array().unwrap();
+    assert_eq!(records.len(), 3);
+    assert_eq!(
+        records
+            .iter()
+            .filter(|pat| pat["expires_at"].is_null())
+            .count(),
+        2
+    );
+    assert!(records.iter().any(|pat| pat["expires_at"] == expiry));
+
+    app.clock.advance(expiry - NOW - 1);
+    common::authed(&app, Method::GET, "/blogs", &secrets[0])
+        .await
+        .status_check(StatusCode::OK);
+    app.clock.advance(1);
+    common::authed(&app, Method::GET, "/blogs", &secrets[0])
+        .await
+        .assert_error(StatusCode::UNAUTHORIZED, "invalid token");
+    app.clock.advance(365 * 86400);
+    for secret in &secrets[1..] {
+        common::authed(&app, Method::GET, "/blogs", secret)
+            .await
+            .status_check(StatusCode::OK);
+    }
+}
+
+#[tokio::test]
+async fn non_expiring_pats_count_toward_the_active_token_limit() {
+    let app = TestApp::new().await;
+    common::register_and_verify(&app, EMAIL, PASSWORD).await;
+    let (session, csrf) = login_session(&app, EMAIL, PASSWORD).await;
+    for index in 0..20 {
+        app.send(session_authorized(
+            json_request(
+                Method::POST,
+                "/auth/pats",
+                json!({ "name": format!("token-{index}"), "expires_at": null }),
+            ),
+            &session,
+            &csrf,
+        ))
+        .await
+        .status_check(StatusCode::CREATED);
+    }
+    app.send(session_authorized(
+        json_request(Method::POST, "/auth/pats", json!({ "name": "too-many" })),
+        &session,
+        &csrf,
+    ))
+    .await
+    .assert_error(StatusCode::FORBIDDEN, "forbidden");
+}
+
+#[tokio::test]
 async fn read_only_pats_cannot_write() {
     let app = TestApp::new().await;
     common::register_and_verify(&app, EMAIL, PASSWORD).await;
@@ -573,6 +679,15 @@ async fn read_only_pats_cannot_write() {
     common::create_blog(&app, &read_pat, "Blog", "read-blog")
         .await
         .assert_error(StatusCode::FORBIDDEN, "forbidden");
+
+    common::authed(
+        &app,
+        Method::DELETE,
+        &format!("/blogs/{blog_id}"),
+        &read_pat,
+    )
+    .await
+    .assert_error(StatusCode::FORBIDDEN, "forbidden");
 
     // Reads still work for read-only PATs, and the write PAT can both.
     let listed = app

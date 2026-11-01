@@ -81,6 +81,67 @@ async fn blog_create_list_and_conflicts() {
 }
 
 #[tokio::test]
+async fn blog_delete_is_owner_scoped_and_cascades() {
+    let app = TestApp::new().await;
+    let owner = register_token(&app, common::EMAIL, common::PASSWORD).await;
+    let stranger = register_token(&app, "other@example.com", common::PASSWORD).await;
+    let blog = app
+        .send(authed_json(
+            Method::POST,
+            "/blogs",
+            &owner,
+            json!({ "name": "Delete me", "slug": "delete-me", "domain": "delete.example" }),
+        ))
+        .await;
+    let id = blog.json()["id"].as_str().unwrap().to_owned();
+    let path = format!("/blogs/{id}");
+    create_post(&app, &owner, &id, json!({ "slug": "post", "title": "Post", "content_markdown": "Body", "status": "published" })).await
+        .status_check(StatusCode::CREATED);
+    set_origins(&app, &owner, &id, json!(["https://delete.example"]))
+        .await
+        .status_check(StatusCode::OK);
+
+    common::authed(&app, Method::DELETE, &path, &stranger)
+        .await
+        .assert_error(StatusCode::NOT_FOUND, "blog not found");
+    common::authed(&app, Method::DELETE, "/blogs/not-a-uuid", &owner)
+        .await
+        .assert_error(StatusCode::BAD_REQUEST, "invalid input");
+    common::authed(&app, Method::DELETE, &path, &owner)
+        .await
+        .status_check(StatusCode::NO_CONTENT);
+    common::authed(&app, Method::DELETE, &path, &owner)
+        .await
+        .assert_error(StatusCode::NOT_FOUND, "blog not found");
+    let list = common::authed(&app, Method::GET, "/blogs", &owner).await;
+    assert_eq!(list.json(), json!([]));
+    common::authed(&app, Method::GET, &format!("{path}/posts"), &owner)
+        .await
+        .assert_error(StatusCode::NOT_FOUND, "blog not found");
+
+    // The slug and domain are released, and no child records survive reuse.
+    let replacement = app
+        .send(authed_json(
+            Method::POST,
+            "/blogs",
+            &owner,
+            json!({ "name": "Replacement", "slug": "delete-me", "domain": "delete.example" }),
+        ))
+        .await;
+    replacement.status_check(StatusCode::CREATED);
+    let replacement_id = replacement.json()["id"].as_str().unwrap().to_owned();
+    let posts = common::authed(
+        &app,
+        Method::GET,
+        &format!("/blogs/{replacement_id}/posts"),
+        &owner,
+    )
+    .await;
+    assert_eq!(posts.json()["items"], json!([]));
+    assert_eq!(replacement.json()["origins"], json!([]));
+}
+
+#[tokio::test]
 async fn blog_create_validates_and_requires_auth() {
     let app = TestApp::new().await;
     app.send(json_request(

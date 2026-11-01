@@ -184,7 +184,7 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 		<Terminal code={examples.setup} />
 
 		<h3>01 / Create an account</h3>
-		<p>Register once: 8–72 byte passwords with at least one letter and one digit. The address is confirmed by a verification mail before the account works; links expire after 30 minutes and can be re-sent from the dashboard. For scripts and CLI tools, mint a personal access token (<code>su_pat_…</code>) in the dashboard's <a href="/dashboard">API tokens</a> panel and pass it as <code>Authorization: Bearer $TOKEN</code>. Tokens are shown exactly once at creation, expire after at most 90 days, and can be revoked at any time.</p>
+		<p>Register once: 8–72 byte passwords with at least one letter and one digit. The address is confirmed by a verification mail before the account works; links expire after 30 minutes and can be re-sent from the dashboard. For scripts and CLI tools, mint a personal access token (<code>su_pat_…</code>) in the dashboard's <a href="/dashboard">API tokens</a> panel and pass it as <code>Authorization: Bearer $TOKEN</code>. Tokens are shown exactly once at creation, expire on your chosen date or never expire, and can be revoked at any time.</p>
 		<Terminal variants={{ curl: examples.register, wget: wgetExamples.register }} />
 
 		<h3>02 / Create a blog</h3>

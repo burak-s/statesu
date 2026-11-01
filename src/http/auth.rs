@@ -125,12 +125,9 @@ pub async fn create_pat(
     } else {
         crate::auth::service::PatScopes::read_only()
     };
-    let days = request
-        .days
-        .unwrap_or(crate::auth::service::PAT_DEFAULT_DAYS);
     let outcome = state
         .auth_service
-        .create_pat(&session.user.id, &request.name, scopes, days)
+        .create_pat(&session.user.id, &request.name, scopes, request.expires_at)
         .await?;
     Ok((
         StatusCode::CREATED,
@@ -149,7 +146,8 @@ pub async fn create_pat(
 #[serde(deny_unknown_fields)]
 pub struct CreatePatRequest {
     pub name: String,
-    pub days: Option<i64>,
+    /// Unix seconds; omitted or null means no expiration.
+    pub expires_at: Option<i64>,
     #[serde(default)]
     pub write: bool,
 }
