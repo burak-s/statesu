@@ -163,6 +163,7 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 	<a class="brand" href="/">Statesu</a>
 	<nav aria-label="Documentation">
 		<a href="#quickstart">Quick start</a>
+		<a href="#integration">Website integration</a>
 		<a href="#delivery">Delivery & CORS</a>
 		<a href="#reference">API reference</a>
 		<a href="/dashboard">Dashboard</a>
@@ -193,6 +194,7 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 
 		<h3>03 / Write a post</h3>
 		<p>Markdown is stored as the canonical content: a leading byte-order mark is stripped, line endings are normalized to LF, and control characters (NUL, other C0/C1, DEL) are rejected. Slug rules: lowercase letters, digits and hyphens, at most 63 bytes; titles are single-line printable text up to 256 bytes; Markdown up to 256 KiB. Omit <code>status</code> to create a draft, or set it to <code>published</code> to publish immediately.</p>
+		<p>Stored content is quota-capped per account over all of your blogs: by default 500 posts (including drafts and deleted posts) and 32 MiB of Markdown (<code>STATESU_MAX_POSTS_PER_USER</code>, <code>STATESU_MAX_TOTAL_CONTENT_BYTES</code>). Reaching the cap refuses further writes with 403; shrinking or deleting content always stays possible.</p>
 		<Terminal variants={{ curl: examples.createPost, wget: wgetExamples.createPost }} />
 
 		<h3>04 / Choose who can read it</h3>
@@ -218,6 +220,20 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 		<p>CORS governs the browser only. <code>curl</code>, scrapers and server-to-server calls can read public posts regardless of the origin list — that is the point of published content; keep secrets out of posts, and never put an API token in code that runs on your website.</p>
 		<h3>Drafts, withdrawal and deletion</h3>
 		<p>Publishing sets <code>published_at</code>; withdrawing clears it and the post stops being delivered. Deleting soft-deletes the post immediately in every listing, while reserving its slug so old URLs never silently point at new content.</p>
+	</section>
+
+	<section id="integration">
+		<h2>Website integration, one script</h2>
+		<p>Publish posts to your site without touching its code per post. Copy the snippet from the dashboard's <a href="/dashboard">Settings</a>:</p>
+		<Terminal code={'<div id="statesu-post"></div>\n<script defer\n  src="https://statesu.example/embed/v1.js"\n  data-blog="burak"\n  data-base-path="/blog"\n  data-target="statesu-post"></script>'} language="html" />
+		<h3>How the URLs work</h3>
+		<p>The script reads the page address. Under the posts path, the last segment is the post slug: <code>/blog/test</code> renders the post <code>test</code>, <code>/blog/deneme</code> renders <code>deneme</code>, and every future published post gets its URL the same way. The base path itself shows a friendly empty state; pages outside it are left untouched; invalid URLs fail without an API call. One script per page.</p>
+		<h3>One-time hosting setup</h3>
+		<p>Your hosting must route the posts path to a single HTML template containing the target element. Common examples:</p>
+		<Terminal code={'# Netlify _redirects\n/blog/*      /blog.html   200\n\n# vercel.json rewrites\n{ "rewrites": [{ "source": "/blog/:path*", "destination": "/blog.html" }] }\n\n# Nginx (try_files inside the site root)\nlocation /blog/ {\n    try_files $uri /blog.html;\n}'} language="nginx" />
+		<p>To use URLs directly under <code>/test</code>, set <code>data-base-path="/"</code> — but then the template must not swallow your existing routes; rewrite only unknown single-segment paths.</p>
+		<h3>Access and safety</h3>
+		<p>Add your site's origin to the blog's allowed origins for browser reads; server-side rendering needs no origin. The embed script sanitizes Markdown with a strict allowlist (marked then DOMPurify, no raw HTML, no images, http(s) links only) and changes nothing outside the target element. Search engines still see your site's shell, not the post text: content is client-rendered; server-side rendering of the same JSON is the SEO route.</p>
 	</section>
 
 	<section id="reference">

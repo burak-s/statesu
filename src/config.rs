@@ -16,6 +16,8 @@ pub const RATE_LIMIT_RPM_ENV: &str = "STATESU_RATE_LIMIT_RPM";
 pub const AUTH_RATE_LIMIT_RPM_ENV: &str = "STATESU_AUTH_RATE_LIMIT_RPM";
 pub const MAX_CONCURRENCY_ENV: &str = "STATESU_MAX_CONCURRENCY";
 pub const ARGON2_CONCURRENCY_ENV: &str = "STATESU_ARGON2_CONCURRENCY";
+pub const MAX_POSTS_PER_USER_ENV: &str = "STATESU_MAX_POSTS_PER_USER";
+pub const MAX_TOTAL_CONTENT_BYTES_ENV: &str = "STATESU_MAX_TOTAL_CONTENT_BYTES";
 pub const LOG_JSON_ENV: &str = "STATESU_LOG_JSON";
 
 const DEFAULT_ADDR: &str = ":8080";
@@ -24,6 +26,10 @@ const DEFAULT_RATE_LIMIT_RPM: u64 = 120;
 const DEFAULT_AUTH_RATE_LIMIT_RPM: u64 = 10;
 const DEFAULT_MAX_CONCURRENCY: usize = 128;
 const DEFAULT_ARGON2_CONCURRENCY: usize = 2;
+/// Per-user stored-content quotas: oldest content counts too, so these are
+/// hard ceilings, not watermarks. Abuse grows linearly with user count.
+const DEFAULT_MAX_POSTS_PER_USER: usize = 500;
+const DEFAULT_MAX_TOTAL_CONTENT_BYTES: usize = 32 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct Config {
@@ -46,6 +52,11 @@ pub struct Config {
     pub auth_rate_limit_rpm: u64,
     pub max_concurrency: usize,
     pub argon2_concurrency: usize,
+    /// Hard cap on posts per user across all of their blogs, including drafts
+    /// and soft-deleted rows.
+    pub max_posts_per_user: usize,
+    /// Hard cap on stored Markdown bytes per user across all of their blogs.
+    pub max_total_content_bytes: usize,
     pub log_json: bool,
 }
 
@@ -226,6 +237,14 @@ impl Config {
             .map(|v| parse_usize(&v, ARGON2_CONCURRENCY_ENV))
             .transpose()?
             .unwrap_or(DEFAULT_ARGON2_CONCURRENCY);
+        let max_posts_per_user = env_no_empty(MAX_POSTS_PER_USER_ENV)?
+            .map(|v| parse_usize(&v, MAX_POSTS_PER_USER_ENV))
+            .transpose()?
+            .unwrap_or(DEFAULT_MAX_POSTS_PER_USER);
+        let max_total_content_bytes = env_no_empty(MAX_TOTAL_CONTENT_BYTES_ENV)?
+            .map(|v| parse_usize(&v, MAX_TOTAL_CONTENT_BYTES_ENV))
+            .transpose()?
+            .unwrap_or(DEFAULT_MAX_TOTAL_CONTENT_BYTES);
         let log_json = match env_no_empty(LOG_JSON_ENV)? {
             Some(v) => match v.to_ascii_lowercase().as_str() {
                 "true" | "1" => true,
@@ -253,6 +272,8 @@ impl Config {
             auth_rate_limit_rpm,
             max_concurrency,
             argon2_concurrency,
+            max_posts_per_user,
+            max_total_content_bytes,
             log_json,
         })
     }

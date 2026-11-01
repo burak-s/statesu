@@ -851,3 +851,219 @@ async fn domain_validation_rejects_malformed_hosts() {
 thread_local! {
     static DOMAIN_SLUG_COUNTER: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
 }
+
+#[tokio::test]
+async fn content_quota_caps_posts_and_bytes_per_owner() {
+    // Post-count cap counts soft-deleted posts and is shared across blogs.
+    let app = TestApp::build(|config| config.max_posts_per_user = 2).await;
+    let token = register_token(&app, "quota-count@example.com", "countingishard7").await;
+    let blog = create_blog(&app, &token, "Count", "count").await;
+    let blog_id = blog.json()["id"].as_str().unwrap().to_owned();
+    for index in 0..2 {
+        let created = create_post(
+            &app,
+            &token,
+            &blog_id,
+            json!({ "slug": format!("p{index}"), "title": "t", "content_markdown": "x" }),
+        )
+        .await;
+        assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+    }
+    let third = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({ "slug": "p2", "title": "t", "content_markdown": "x" }),
+    )
+    .await;
+    third.assert_error(StatusCode::FORBIDDEN, "forbidden");
+    // A second blog shares the same owner budget.
+    let other = create_blog(&app, &token, "Other", "other").await;
+    third.assert_error(StatusCode::FORBIDDEN, "forbidden");
+    let other_id = other.json()["id"].as_str().unwrap().to_owned();
+    let overflow = create_post(
+        &app,
+        &token,
+        &other_id,
+        json!({ "slug": "p2", "title": "t", "content_markdown": "x" }),
+    )
+    .await;
+    overflow.assert_error(StatusCode::FORBIDDEN, "forbidden");
+
+    // Byte cap: drafts, published and soft-deleted Markdown all count.
+    let app = TestApp::build(|config| {
+        config.max_posts_per_user = 10;
+        config.max_total_content_bytes = 160 * 1024;
+    })
+    .await;
+    let token = register_token(&app, "quota-bytes@example.com", "bytesmatter7").await;
+    let blog = create_blog(&app, &token, "Bytes", "bytes").await;
+    let blog_id = blog.json()["id"].as_str().unwrap().to_owned();
+    let chunk = "a".repeat(60 * 1024);
+    let id_of = |slug: &str, listed: Value| -> String {
+        listed["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["slug"] == slug)
+            .expect("post present in listing")["id"]
+            .as_str()
+            .expect("id")
+            .to_owned()
+    };
+
+    let first = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({ "slug": "b1", "title": "t", "content_markdown": chunk.clone() }),
+    )
+    .await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.text());
+    let second = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({ "slug": "b2", "title": "t", "content_markdown": chunk.clone() }),
+    )
+    .await;
+    assert_eq!(second.status, StatusCode::CREATED, "{}", second.text());
+    // 180 KiB > 160 KiB cap.
+    let third = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({ "slug": "b3", "title": "t", "content_markdown": chunk.clone() }),
+    )
+    .await;
+    third.assert_error(StatusCode::FORBIDDEN, "forbidden");
+
+    // Soft-deleting does not free the byte budget: the deleted chunk stays
+    // counted, so the next create is still over the cap.
+    let listing = app
+        .send(authed_json(
+            Method::GET,
+            &format!("/blogs/{blog_id}/posts"),
+            &token,
+            json!({}),
+        ))
+        .await
+        .json();
+    let b2_id = id_of("b2", listing.clone());
+    let deleted = app
+        .send(authed_json(
+            Method::DELETE,
+            &format!("/blogs/{blog_id}/posts/{b2_id}"),
+            &token,
+            json!({}),
+        ))
+        .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    let again = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({ "slug": "b4", "title": "t", "content_markdown": chunk.clone() }),
+    )
+    .await;
+    again.assert_error(StatusCode::FORBIDDEN, "forbidden");
+
+    // Shrinking an existing post always stays possible, then frees budget.
+    let b1_id = id_of("b1", listing);
+    let shrink = patch_post(
+        &app,
+        &token,
+        &blog_id,
+        &b1_id,
+        json!({ "content_markdown": "a".repeat(20 * 1024) }),
+    )
+    .await;
+    assert_eq!(shrink.status, StatusCode::OK, "{}", shrink.text());
+    // 60 KiB (deleted, still counted) + 20 KiB + 60 KiB = 140 KiB.
+    let freed = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({ "slug": "b5", "title": "t", "content_markdown": chunk }),
+    )
+    .await;
+    assert_eq!(freed.status, StatusCode::CREATED, "{}", freed.text());
+    let new_listing = app
+        .send(authed_json(
+            Method::GET,
+            &format!("/blogs/{blog_id}/posts"),
+            &token,
+            json!({}),
+        ))
+        .await
+        .json();
+    let b5_id = id_of("b5", new_listing);
+    // 140 KiB - 60 KiB + 85 KiB = 165 KiB > 160 KiB cap.
+    let grown = patch_post(
+        &app,
+        &token,
+        &blog_id,
+        &b5_id,
+        json!({ "content_markdown": "a".repeat(85 * 1024) }),
+    )
+    .await;
+    grown.assert_error(StatusCode::FORBIDDEN, "forbidden");
+}
+
+/// The server stores untrusted Markdown verbatim and never processes it as
+/// HTML, script or markup: attack payloads must survive create/patch, appear
+/// byte-for-byte over both management and public reads, and any later
+/// execution risk stays entirely with the browser-side renderer.
+#[tokio::test]
+async fn stored_attack_payload_round_trips_verbatim() {
+    let app = TestApp::new().await;
+    let token = register_token(&app, "payload@example.com", "intheclear7").await;
+    let blog = create_blog(&app, &token, "Payload", "payload").await;
+    let blog_id = blog.json()["id"].as_str().unwrap().to_owned();
+    let attacks = "# hi\n\n<script>alert('x')</script>\n<img src=x onerror=alert(1)>\n<iframe src=\"evil.example\"></iframe>\n[link](javascript:alert(1)) [data](data:text/html,<script>alert(2)</script>)\n<body onload=alert(3)> <svg><script>alert(4)</script></svg>\n{\"payload\":\"value\"}";
+    let created = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({
+            "slug": "attack",
+            "title": "Attack",
+            "content_markdown": attacks,
+            "status": "published"
+        }),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+
+    let management = app
+        .send(authed_json(
+            Method::GET,
+            &format!("/blogs/{blog_id}/posts"),
+            &token,
+            json!({}),
+        ))
+        .await;
+    assert_eq!(management.json()["items"][0]["content_markdown"], attacks);
+
+    let public_read = app
+        .send(empty_request(
+            Method::GET,
+            "/public/blogs/payload/posts/attack",
+        ))
+        .await;
+    assert_eq!(public_read.status, StatusCode::OK);
+    assert_eq!(public_read.json()["content_markdown"], attacks);
+    assert_eq!(public_read.header("content-type"), Some("application/json"));
+    assert_eq!(
+        public_read.header("x-content-type-options"),
+        Some("nosniff")
+    );
+}
+
+fn empty_request(method: Method, path: &str) -> Request<Body> {
+    Request::builder()
+        .method(method)
+        .uri(path)
+        .body(Body::empty())
+        .expect("request")
+}

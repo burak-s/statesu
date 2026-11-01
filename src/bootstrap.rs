@@ -94,7 +94,13 @@ pub async fn build_app_with_mailer(
         config.public_url.clone(),
     );
     let blog_service = BlogService::new(blog_repo.clone(), clock.clone());
-    let post_service = PostService::new(post_repo, blog_repo, clock.clone());
+    let post_service = PostService::new(
+        post_repo,
+        blog_repo,
+        clock.clone(),
+        config.max_posts_per_user,
+        config.max_total_content_bytes,
+    );
 
     let limiters = Limiters {
         general: Arc::new(RateLimiter::per_minute(

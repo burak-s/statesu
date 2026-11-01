@@ -15,6 +15,12 @@ use crate::post::{PostRow, STATUS_DRAFT, STATUS_PUBLISHED};
 pub const MAX_TITLE_BYTES: usize = 256;
 pub const MAX_CONTENT_BYTES: usize = 256 * 1024;
 
+/// Per-user stored-content quotas, enforced over every blog the user owns and
+/// every stored row, including drafts and soft-deleted posts. Both are set in
+/// `Config` (`STATESU_MAX_POSTS_PER_USER`, `STATESU_MAX_TOTAL_CONTENT_BYTES`).
+pub const MAX_POSTS_PER_USER: usize = 500;
+pub const MAX_TOTAL_CONTENT_BYTES_PER_USER: usize = 32 * 1024 * 1024;
+
 /// Strict JSON request body for creating a post.
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -76,14 +82,24 @@ pub struct PostService {
     posts: PostRepository,
     blogs: BlogRepository,
     clock: Arc<dyn Clock>,
+    max_posts_per_user: i64,
+    max_total_content_bytes: i64,
 }
 
 impl PostService {
-    pub fn new(posts: PostRepository, blogs: BlogRepository, clock: Arc<dyn Clock>) -> PostService {
+    pub fn new(
+        posts: PostRepository,
+        blogs: BlogRepository,
+        clock: Arc<dyn Clock>,
+        max_posts_per_user: usize,
+        max_total_content_bytes: usize,
+    ) -> PostService {
         PostService {
             posts,
             blogs,
             clock,
+            max_posts_per_user: i64::try_from(max_posts_per_user).unwrap_or(1),
+            max_total_content_bytes: i64::try_from(max_total_content_bytes).unwrap_or(1),
         }
     }
 
@@ -102,16 +118,21 @@ impl PostService {
         let now = self.clock.now();
         let id = Uuid::now_v7();
         self.posts
-            .insert(&NewPost {
-                id: &id,
-                blog_id: &blog.id,
-                author_id: &author_id,
-                slug: &slug,
-                title: &title,
-                content_markdown: &content,
-                status,
-                now,
-            })
+            .insert_with_quota(
+                &NewPost {
+                    id: &id,
+                    blog_id: &blog.id,
+                    author_id: &author_id,
+                    slug: &slug,
+                    title: &title,
+                    content_markdown: &content,
+                    status,
+                    now,
+                },
+                &author_id,
+                self.max_posts_per_user,
+                self.max_total_content_bytes,
+            )
             .await?;
         Ok(PostResponse {
             id,
@@ -207,7 +228,9 @@ impl PostService {
         }
         row.status = next_status.to_owned();
         row.updated_at = now;
-        self.posts.update(&row).await?;
+        self.posts
+            .update_with_quota(&row, &owner_id, self.max_total_content_bytes)
+            .await?;
         Ok(post_response(row))
     }
 

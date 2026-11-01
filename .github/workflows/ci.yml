@@ -44,8 +44,10 @@ jobs:
               cd web
               npm ci
               npm run build
+              npm run test
               mkdir -p ../assets/dist
               cp -r build/. ../assets/dist/
+              test -f ../assets/dist/embed/v1.js
 
          - name: Format
            run: cargo fmt --all --check

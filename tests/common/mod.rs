@@ -425,6 +425,10 @@ pub fn test_config(db_path: std::path::PathBuf) -> Config {
         auth_rate_limit_rpm: 10_000,
         max_concurrency: 64,
         argon2_concurrency: 1,
+        // Tight enough that quota tests finish fast; quota tests that need a
+        // different budget shrink it further through `build(configure)`.
+        max_posts_per_user: 64,
+        max_total_content_bytes: 2 * 1024 * 1024,
         log_json: false,
     }
 }
@@ -453,6 +457,13 @@ impl TestAssets {
         files.insert(
             "favicon.svg",
             (b"<svg></svg>".as_slice(), "image/svg+xml; charset=utf-8"),
+        );
+        files.insert(
+            "embed/v1.js",
+            (
+                b"/* Statesu embed v1 */".as_slice(),
+                "text/javascript; charset=utf-8",
+            ),
         );
         TestAssets { files }
     }

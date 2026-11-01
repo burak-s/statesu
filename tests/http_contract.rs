@@ -49,6 +49,20 @@ async fn docs_static_contract_keeps_cache_security_and_404_semantics() {
         Some("text/javascript; charset=utf-8")
     );
 
+    // The embed script is served like pages: revalidation always applies so
+    // hosted sites never render against a stale integration contract.
+    let embed = app.send(empty(Method::GET, "/embed/v1.js")).await;
+    assert_eq!(embed.status, StatusCode::OK);
+    assert_eq!(
+        embed.header("content-type"),
+        Some("text/javascript; charset=utf-8")
+    );
+    assert_eq!(embed.header("cache-control"), Some("no-cache"));
+    assert_eq!(embed.header("x-content-type-options"), Some("nosniff"));
+    let embed_head = app.send(empty(Method::HEAD, "/embed/v1.js")).await;
+    assert_eq!(embed_head.status, StatusCode::OK);
+    assert!(embed_head.body.is_empty());
+
     app.send(empty(Method::GET, "/missing"))
         .await
         .status_check(StatusCode::NOT_FOUND);

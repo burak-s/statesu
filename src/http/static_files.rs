@@ -85,9 +85,10 @@ pub async fn fallback(State(state): State<AppState>, request: Request) -> Respon
     let is_page = index || resolved_path.ends_with(".html");
     let cache_mode = if raw_path.starts_with("_app/immutable/") {
         CacheMode::Immutable
-    } else if is_page {
-        // HTML pages reference hashed assets; they must revalidate so a
-        // deployed build never serves stale markup.
+    } else if is_page || raw_path.starts_with("embed/") {
+        // HTML pages and the versioned embed script are referenced by user
+        // sites; both must revalidate so a deployed build never serves a
+        // stale integration contract.
         CacheMode::NoCache
     } else {
         CacheMode::Default

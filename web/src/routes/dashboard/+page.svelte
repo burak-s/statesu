@@ -67,6 +67,76 @@
 	let settingsError = $state('');
 	let settingsSaved = $state(false);
 
+	// Website integration ----------------------------------------------------
+	let integrationOriginDraft = $state('');
+	let integrationPath = $state('/blog');
+	let integrationCopied = $state(false);
+	let integrationNote = $state('');
+	let integrationOriginValid = $derived.by(() => integrationOrigin() !== '');
+	let integrationSnippet = $derived.by(() => {
+		if (!selectedBlog) return '';
+		const basePath = validateIntegrationPath(integrationPath) ? integrationPath : '/blog';
+		return [
+			'<div id="statesu-post"></div>',
+			'<script defer',
+			`  src="${location.origin}/embed/v1.js"`,
+			`  data-blog="${selectedBlog.slug}"`,
+			`  data-base-path="${basePath}"`,
+			'  data-target="statesu-post"><\/script>'
+		].join('\n');
+	});
+	let integrationExampleUrl = $derived.by(() => {
+		const origin = integrationOrigin();
+		if (!origin) return '';
+		const basePath = validateIntegrationPath(integrationPath) ? integrationPath : '/blog';
+		const prefix = basePath === '/' ? '' : basePath;
+		return `${origin}${prefix}/${posts[0]?.slug ?? 'post-slug'}`;
+	});
+
+	/** Site address to origin: accepts `example.com` or a full origin. */
+	function integrationOrigin() {
+		const raw = integrationOriginDraft.trim();
+		if (!raw) return '';
+		const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+		try {
+			return new URL(withScheme).origin;
+		} catch {
+			return '';
+		}
+	}
+
+	function validateIntegrationPath(path) {
+		return path === '/' || /^\/[a-z0-9-]+$/.test(path);
+	}
+
+	async function copyIntegration() {
+		integrationNote = '';
+		integrationCopied = false;
+		const snippet = integrationSnippet;
+		try {
+			await navigator.clipboard.writeText(snippet);
+			integrationCopied = true;
+		} catch {
+			integrationNote = 'Copy failed — select the code below and copy it manually.';
+		}
+	}
+
+	/** Adds the integration origin to the origins draft; Save applies it. */
+	function allowIntegrationOrigin() {
+		integrationNote = '';
+		integrationCopied = false;
+		const origin = integrationOrigin();
+		if (!origin) {
+			integrationNote = 'Enter your site address first.';
+			return;
+		}
+		const existing = originsDraft.split('\n').map((line) => line.trim()).filter(Boolean);
+		if (!existing.some((line) => line.toLowerCase() === origin.toLowerCase())) {
+			originsDraft = [...existing, origin].sort().join('\n');
+		}
+		integrationNote = 'Origin added to the list — press Save settings to apply.';
+	}
+
 	// Posts ------------------------------------------------------------------
 	/** @type {{ id: string, slug: string, title: string, content_markdown: string, status: string, published_at: number|null, deleted_warned?: boolean }[]} */
 	let posts = $state([]);
@@ -256,6 +326,10 @@
 		if (!id) return;
 		domainDraft = selectedBlog?.domain ?? '';
 		originsDraft = (selectedBlog?.origins ?? []).join('\n');
+		integrationOriginDraft = domainDraft;
+		integrationOriginValid &&= true;
+		integrationNote = '';
+		integrationCopied = false;
 		const result = await request(`/blogs/${id}/posts`);
 		if (!result.ok) {
 			if (signedOut(result)) return;
@@ -660,7 +734,43 @@
 							<div><button type="submit">Save settings</button></div>
 							{#if settingsSaved}<p class="ok">Settings saved.</p>{/if}
 							{#if settingsError}<p class="error" role="alert">{settingsError}</p>{/if}
+							<div>
+								<button type="button" disabled={!integrationOriginValid} onclick={allowIntegrationOrigin}>
+									Add site origin to the list
+								</button>
+							</div>
 						</form>
+					{/if}
+				</div>
+				<div class="view">
+					<h3>Website integration</h3>
+					{#if !selectedBlog}
+						<p class="note">Create a blog first.</p>
+					{:else if !integrationOriginValid && integrationOriginDraft.trim()!==''}
+						<p class="error" role="alert">The site address is not a usable origin.</p>
+					{:else}
+						<p>Connect your website once: every published post becomes one URL there. Your site serves one HTML template under the posts path, and the embed script below fetches and renders the content safely.</p>
+						<label for="integration-origin">Website address</label>
+						<input id="integration-origin" bind:value={integrationOriginDraft} placeholder="burakselcuk.me" />
+						<label for="integration-path">Posts path</label>
+						<input id="integration-path" bind:value={integrationPath} placeholder="/blog" />
+						{#if !integrationOriginValid && integrationOriginDraft.trim()===''}
+							<p class="note">Enter the address of the site that should show these posts. If your address isn't the dashboard origin, add it to Allowed origins above.</p>
+						{/if}
+						{#if integrationExampleUrl}
+							<p>Example: <code>{integrationExampleUrl}</code></p>
+						{/if}
+						<p class="note">The embed script is served by this Statesu deployment, so your site needs no extra API origin — only its own address allowed above. Your hosting must route the posts path to one HTML page containing the target element.</p>
+						<div>
+							<button type="button" disabled={!integrationSnippet || !integrationOriginValid} onclick={copyIntegration}>{integrationCopied ? 'Copied!' : 'Copy code'}</button>
+						</div>
+						{#if integrationNote}<p class="ok" role="status">{integrationNote}</p>{/if}
+						<details>
+							<summary>Copyable integration code</summary>
+							<div class="details-body">
+								<pre><code>{integrationSnippet}</code></pre>
+							</div>
+						</details>
 					{/if}
 				</div>
 			{:else}

@@ -27,12 +27,27 @@ impl PostRepository {
         PostRepository { pool }
     }
 
-    pub async fn insert(&self, post: &NewPost<'_>) -> Result<(), Error> {
+    /// Inserts a post when the owner's post-count and byte quotas both allow
+    /// it. The guard selects the owner's usage inside the same write
+    /// statement, so the check and the write commit atomically;
+    /// unique-violation handling is shared with the plain insert error path.
+    pub async fn insert_with_quota(
+        &self,
+        post: &NewPost<'_>,
+        owner_id: &uuid::Uuid,
+        max_posts: i64,
+        max_bytes: i64,
+    ) -> Result<(), Error> {
         let published_at = (post.status == STATUS_PUBLISHED).then_some(post.now);
         let result = sqlx::query(
             "INSERT INTO posts (id, blog_id, author_id, slug, title, content_markdown, \
              status, created_at, updated_at, published_at) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ? \
+             WHERE (SELECT COUNT(*) FROM posts p JOIN blogs b ON p.blog_id = b.id \
+                    WHERE b.owner_id = ?) < ? \
+             AND (SELECT COALESCE(SUM(LENGTH(CAST(p.content_markdown AS BLOB))), 0) \
+                  FROM posts p JOIN blogs b ON p.blog_id = b.id \
+                  WHERE b.owner_id = ?) + LENGTH(CAST(? AS BLOB)) <= ?",
         )
         .bind(post.id.to_string())
         .bind(post.blog_id.to_string())
@@ -44,11 +59,16 @@ impl PostRepository {
         .bind(post.now)
         .bind(post.now)
         .bind(published_at)
+        .bind(owner_id.to_string())
+        .bind(max_posts)
+        .bind(owner_id.to_string())
+        .bind(post.content_markdown)
+        .bind(max_bytes)
         .execute(&self.pool)
         .await
         .map_err(|err| insert_error(err, "post insert"))?;
         if result.rows_affected() != 1 {
-            return Err(failed("post insert affected no row"));
+            return Err(Error::Forbidden);
         }
         Ok(())
     }
@@ -123,12 +143,24 @@ impl PostRepository {
         .transpose()
     }
 
-    /// Full-row update for patches. Timestamp and publication fields are
-    /// decided by the service; ownership stays in the blog lookup.
-    pub async fn update(&self, post: &PostRow) -> Result<(), Error> {
+    /// Full-row update for patches, quota-checked like inserts: the WHERE
+    /// guard compares the byte cost of the replacement against the owner's
+    /// stored total, using the row's pre-update content length. Timestamp and
+    /// publication fields are decided by the service.
+    pub async fn update_with_quota(
+        &self,
+        post: &PostRow,
+        owner_id: &uuid::Uuid,
+        max_bytes: i64,
+    ) -> Result<(), Error> {
         let result = sqlx::query(
             "UPDATE posts SET slug = ?, title = ?, content_markdown = ?, status = ?, \
-             updated_at = ?, published_at = ? WHERE id = ? AND blog_id = ? AND deleted_at IS NULL",
+             updated_at = ?, published_at = ? \
+             WHERE id = ? AND blog_id = ? AND deleted_at IS NULL \
+             AND (SELECT COALESCE(SUM(LENGTH(CAST(p.content_markdown AS BLOB))), 0) \
+                  FROM posts p JOIN blogs b ON p.blog_id = b.id \
+                  WHERE b.owner_id = ?) \
+                 - LENGTH(CAST(content_markdown AS BLOB)) + LENGTH(CAST(? AS BLOB)) <= ?",
         )
         .bind(post.slug.as_str())
         .bind(post.title.as_str())
@@ -138,11 +170,28 @@ impl PostRepository {
         .bind(post.published_at)
         .bind(post.id.to_string())
         .bind(post.blog_id.to_string())
+        .bind(owner_id.to_string())
+        .bind(post.content_markdown.as_str())
+        .bind(max_bytes)
         .execute(&self.pool)
         .await
         .map_err(|err| insert_error(err, "post update"))?;
         if result.rows_affected() != 1 {
-            return Err(failed("post update affected no row"));
+            // The row may have vanished between the service read and this
+            // write; only then is this a missing post, never a quota issue.
+            let exists = sqlx::query_scalar::<_, i64>(
+                "SELECT EXISTS(SELECT 1 FROM posts WHERE id = ? AND blog_id = ? \
+                 AND deleted_at IS NULL)",
+            )
+            .bind(post.id.to_string())
+            .bind(post.blog_id.to_string())
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|_| failed("post update exists check"))?;
+            if exists == 0 {
+                return Err(Error::PostNotFound);
+            }
+            return Err(Error::Forbidden);
         }
         Ok(())
     }
