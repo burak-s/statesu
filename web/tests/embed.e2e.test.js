@@ -76,16 +76,21 @@ test('network failure explains the origin requirement and fails closed', async (
 	assert.match(target.textContent, /could not be reached/);
 });
 
-test('a slow API produces a timeout state instead of a hang', async () => {
+test('a slow API is timed out and its request actually cancelled', async () => {
+	let requestSignal;
 	const { target } = await boot({
 		url: 'https://site.example/blog/test',
-		fetchBehavior: async () => ({
-			ok: true,
-			status: 200,
-			json: () => new Promise(() => {})
-		})
+		fetchBehavior: (api, { signal }) => {
+			requestSignal = signal;
+			return {
+				ok: true,
+				status: 200,
+				json: () => new Promise(() => {})
+			};
+		}
 	});
 	assert.match(target.textContent, /did not answer in time/);
+	assert.equal(requestSignal.aborted, true, 'deadline must abort the request itself');
 });
 
 test('invalid post URLs fail without an API call', async () => {

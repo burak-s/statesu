@@ -1097,7 +1097,9 @@ async fn shrinks_stay_possible_when_usage_is_over_the_cap() {
         .execute(&app.app.pool)
         .await
         .expect("raw pad write");
-    // Growth is refused, shrinking is accepted, and the cap is re-earned.
+    // Growth is refused. Shrinking must succeed even while the stored total
+    // stays over the cap (40 -> 36 KiB, still above 32 KiB): the old guard
+    // rejected exactly this case and locked the account.
     let grown = patch_post(
         &app,
         &token,
@@ -1107,6 +1109,24 @@ async fn shrinks_stay_possible_when_usage_is_over_the_cap() {
     )
     .await;
     grown.assert_error(StatusCode::FORBIDDEN, "forbidden");
+    let partial = patch_post(
+        &app,
+        &token,
+        &blog_id,
+        &post_id,
+        json!({ "content_markdown": "a".repeat(36 * 1024) }),
+    )
+    .await;
+    assert_eq!(partial.status, StatusCode::OK, "{}", partial.text());
+    let again_over = patch_post(
+        &app,
+        &token,
+        &blog_id,
+        &post_id,
+        json!({ "content_markdown": "a".repeat(40 * 1024) }),
+    )
+    .await;
+    again_over.assert_error(StatusCode::FORBIDDEN, "forbidden");
     let shrink = patch_post(
         &app,
         &token,
@@ -1116,6 +1136,7 @@ async fn shrinks_stay_possible_when_usage_is_over_the_cap() {
     )
     .await;
     assert_eq!(shrink.status, StatusCode::OK, "{}", shrink.text());
+    // Once under the cap, the freed budget works as normal.
     let refill = patch_post(
         &app,
         &token,

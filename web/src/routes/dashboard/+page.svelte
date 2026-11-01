@@ -1,5 +1,6 @@
 <script>
 	import { isEmail, request } from '#lib/api.js';
+	import { isValidPostPath, originFromSiteAddress } from '#lib/integration.js';
 
 	// Session ----------------------------------------------------------------
 	/** @type {{ id: string, email: string } | null} */
@@ -92,22 +93,12 @@
 		return `${origin}${prefix}/${posts[0]?.slug ?? 'post-slug'}`;
 	});
 
-	/** Site address to origin: accepts `example.com` or a full origin. */
 	function integrationOrigin() {
-		const raw = integrationOriginDraft.trim();
-		if (!raw) return '';
-		const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
-		try {
-			const url = new URL(withScheme);
-			if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
-			return url.origin;
-		} catch {
-			return '';
-		}
+		return originFromSiteAddress(integrationOriginDraft);
 	}
 
 	function validateIntegrationPath(path) {
-		return path === '/' || /^\/[a-z0-9-]+$/.test(path);
+		return isValidPostPath(path);
 	}
 
 	async function copyIntegration() {

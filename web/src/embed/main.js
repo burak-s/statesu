@@ -58,30 +58,34 @@ function showState(root, message, isError) {
 }
 
 /**
- * Fetches and fully parses a post under one deadline: an unresponsive API
- * must fail on body reads too, not only on headers.
+ * Fetches and fully parses a post under one deadline that covers headers and
+ * body reads. When the deadline fires the request is actually cancelled:
+ * the controller is aborted and the signal rides on the fetch, so a slow or
+ * stuck host cannot keep downloading in the background.
  * Returns `{ post }` on success or `{ error: { kind, status? } }`.
  */
 async function fetchPostJson(fetch, api, signalTimeoutMs) {
+	const controller = new AbortController();
+	let timedOut = false;
 	let timer;
 	const deadline = new Promise((_, reject) => {
-		timer = setTimeout(
-			() => reject(new DOMException('timeout', 'AbortError')),
-			signalTimeoutMs
-		);
+		timer = setTimeout(() => {
+			timedOut = true;
+			controller.abort();
+			reject(new DOMException('timeout', 'AbortError'));
+		}, signalTimeoutMs);
 	});
-	const clearTimeoutSafe = () => clearTimeout(timer);
 	try {
 		const response = await Promise.race([
 			fetch(api, {
 				method: 'GET',
 				credentials: 'omit',
 				headers: { Accept: 'application/json' },
-				redirect: 'error'
+				redirect: 'error',
+				signal: controller.signal
 			}),
 			deadline
 		]);
-		// Slow responses are also aborted so real hosts cancel body reads.
 		if (response.status === 0 || response.type === 'opaqueredirect') {
 			return { error: { kind: 'network' } };
 		}
@@ -91,12 +95,13 @@ async function fetchPostJson(fetch, api, signalTimeoutMs) {
 		const post = await Promise.race([response.json(), deadline]);
 		return { post };
 	} catch (error) {
-		const kind = error?.name === 'AbortError'
-			? 'timeout'
-			: error?.name === 'SyntaxError' ? 'bad-response' : 'network';
+		if (timedOut || error?.name === 'AbortError') {
+			return { error: { kind: 'timeout' } };
+		}
+		const kind = error?.name === 'SyntaxError' ? 'bad-response' : 'network';
 		return { error: { kind } };
 	} finally {
-		clearTimeoutSafe();
+		clearTimeout(timer);
 	}
 }
 
@@ -183,9 +188,7 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 		return;
 	}
 
-	const configured = script.dataset.api
-		? parseApiOrigin(script.dataset.api)
-		: parseApiOrigin(script.getAttribute('src') ?? '');
+	const configured = parseApiOrigin(script.getAttribute('src') ?? '');
 	if (!configured.ok) {
 		showState(
 			root,

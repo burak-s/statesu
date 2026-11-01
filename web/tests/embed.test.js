@@ -171,8 +171,16 @@ test('html entities are not re-parsed as markup', () => {
 
 test('fail-closed: renderer availability requires a sanitizing DOM', () => {
 	assert.equal(buildRenderer(null), null);
-	// A window whose document cannot sanitize (no DOM walker support) must
-	// yield null — never a renderer that passes raw HTML through.
+	// A deliberately broken document must yield null — never a renderer that
+	// passes raw HTML through. DOMPurify builds its template through
+	// DOMImplementation.createHTMLDocument; removing it makes the window
+	// genuinely unsupported instead of passing a fake object.
+	const dom2 = new JSDOM('<!doctype html><html><body></body></html>', {
+		url: 'https://site.example/blog/x'
+	});
+	dom2.window.DOMImplementation.prototype.createHTMLDocument = undefined;
+	assert.equal(buildRenderer(dom2.window), null);
+	// A bare non-DOM object stays fail-closed as well.
 	const unsupported = { location: { href: 'https://site.example/x' }, document: {} };
 	assert.equal(buildRenderer(unsupported), null);
 });
