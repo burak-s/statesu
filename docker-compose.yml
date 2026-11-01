@@ -1,0 +1,19 @@
+services:
+   statesu:
+      build:
+         context: .
+         dockerfile: Dockerfile
+      container_name: statesu
+      restart: unless-stopped
+      env_file:
+         - .env
+      environment:
+         STATESU_DB: /data/statesu.db
+         STATESU_ADDR: :8080
+      expose:
+         - "8080"
+      volumes:
+         - statesu-data:/data
+
+volumes:
+   statesu-data: {}

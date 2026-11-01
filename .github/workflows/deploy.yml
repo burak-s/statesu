@@ -18,6 +18,7 @@ jobs:
       if: ${{ github.event.workflow_run.conclusion == 'success' }}
       runs-on: self-hosted
       timeout-minutes: 15
+      environment: production
 
       steps:
          - name: Checkout
@@ -25,8 +26,74 @@ jobs:
            with:
               ref: ${{ github.event.workflow_run.head_sha }}
 
+         - name: Render .env from GitHub configuration
+           env:
+              STATESU_EMAIL_KEY: ${{ secrets.STATESU_EMAIL_KEY }}
+              STATESU_EMAIL_HMAC_KEY: ${{ secrets.STATESU_EMAIL_HMAC_KEY }}
+              STATESU_RESEND: ${{ secrets.STATESU_RESEND }}
+              STATESU_MAIL_FROM: ${{ secrets.STATESU_MAIL_FROM }}
+              STATESU_TURNSTILE_SECRET_KEY: ${{ secrets.STATESU_TURNSTILE_SECRET_KEY }}
+              STATESU_ADDR: ${{ vars.STATESU_ADDR }}
+              STATESU_PUBLIC_URL: ${{ vars.STATESU_PUBLIC_URL }}
+              STATESU_ALLOWED_ORIGINS: ${{ vars.STATESU_ALLOWED_ORIGINS }}
+              STATESU_TRUSTED_PROXIES: ${{ vars.STATESU_TRUSTED_PROXIES }}
+              STATESU_RATE_LIMIT_RPM: ${{ vars.STATESU_RATE_LIMIT_RPM }}
+              STATESU_AUTH_RATE_LIMIT_RPM: ${{ vars.STATESU_AUTH_RATE_LIMIT_RPM }}
+              STATESU_MAX_CONCURRENCY: ${{ vars.STATESU_MAX_CONCURRENCY }}
+              STATESU_ARGON2_CONCURRENCY: ${{ vars.STATESU_ARGON2_CONCURRENCY }}
+              STATESU_MAX_POSTS_PER_USER: ${{ vars.STATESU_MAX_POSTS_PER_USER }}
+              STATESU_MAX_TOTAL_CONTENT_BYTES: ${{ vars.STATESU_MAX_TOTAL_CONTENT_BYTES }}
+              STATESU_LOG_JSON: ${{ vars.STATESU_LOG_JSON }}
+           run: |
+              set -euo pipefail
+              # Start empty: GitHub is the single source of truth, so a stale
+              # file left behind by a previous manual run never survives.
+              : > .env
+              required=(STATESU_EMAIL_KEY STATESU_EMAIL_HMAC_KEY STATESU_RESEND STATESU_PUBLIC_URL)
+              missing=""
+              for name in "${required[@]}"; do
+                 if [ -z "${!name:-}" ]; then
+                    missing="$missing $name"
+                 fi
+              done
+              if [ -n "$missing" ]; then
+                 echo "missing required configuration (set as secrets/variables on the 'production' environment):$missing"
+                 exit 1
+              fi
+              # Values are written empty-when-unset so server defaults apply;
+              # secrets stay masked in logs by GitHub automatically. Single
+              # quotes keep compose's dotenv expansion out of the values.
+              names=(
+                 STATESU_EMAIL_KEY STATESU_EMAIL_HMAC_KEY STATESU_RESEND
+                 STATESU_MAIL_FROM STATESU_PUBLIC_URL STATESU_ADDR
+                 STATESU_ALLOWED_ORIGINS STATESU_TRUSTED_PROXIES
+                 STATESU_RATE_LIMIT_RPM STATESU_AUTH_RATE_LIMIT_RPM
+                 STATESU_MAX_CONCURRENCY STATESU_ARGON2_CONCURRENCY
+                 STATESU_MAX_POSTS_PER_USER STATESU_MAX_TOTAL_CONTENT_BYTES
+                 STATESU_TURNSTILE_SECRET_KEY STATESU_LOG_JSON
+              )
+              for name in "${names[@]}"; do
+                 value="${!name:-}"
+                 if [ -n "$value" ]; then
+                    printf "%s='%s'\n" "$name" "$value" >> .env
+                 fi
+              done
+              chmod 600 .env
+
          - name: Build & Restart
-           run: docker compose -f /home/burak/statesu-deploy/docker-compose.yml --project-directory . up --build -d
+           env:
+              COMPOSE_OVERRIDE: ${{ vars.STATESU_COMPOSE_OVERRIDE }}
+           run: |
+              set -euo pipefail
+              args=(-f docker-compose.yml)
+              if [ -n "$COMPOSE_OVERRIDE" ]; then
+                 if [[ "$COMPOSE_OVERRIDE" != /* || ! -f "$COMPOSE_OVERRIDE" ]]; then
+                    echo "STATESU_COMPOSE_OVERRIDE must point to an existing absolute path on the runner"
+                    exit 1
+                 fi
+                 args+=(-f "$COMPOSE_OVERRIDE")
+              fi
+              docker compose "${args[@]}" --project-directory . up --build -d
 
          - name: Prune old images
            run: docker image prune -f

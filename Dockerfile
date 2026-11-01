@@ -43,9 +43,9 @@ WORKDIR /app
 COPY --from=builder --chown=10001:10001 \
     /src/target/x86_64-unknown-linux-musl/release/statesu /app/statesu
 
-ENV STATESU_ADDR=:8088
+ENV STATESU_ADDR=:8080
 
-EXPOSE 8088
+EXPOSE 8080
 USER 10001:10001
 
 ENTRYPOINT ["/app/statesu"]

@@ -85,7 +85,7 @@ docker-build:
 docker-run: docker-build
 	docker run --rm -it \
 		--name $(CONTAINER) \
-		-p $(PORT):8088 \
+		-p $(PORT):8080 \
 		-v $(VOLUME):/data \
 		--env-file .env \
 		$(IMAGE):$(TAG)
