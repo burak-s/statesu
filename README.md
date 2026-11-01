@@ -22,7 +22,17 @@ cp .env.example .env    # then fill in the values
 make dev                # API on 127.0.0.1:8080 + Vite dashboard on :5173
 ```
 
-`make dev` builds the web dashboard, starts the Rust API in the background and runs the Vite dev server with HMR, proxying `/auth`, `/blogs` and `/public` to the API.
+`make dev` starts the Rust API in the background and runs the Vite dev server with HMR, proxying `/auth`, `/blogs` and `/public` to the API.
+
+CLI development is separate and does not start the API or web server:
+
+```sh
+make dev-cli                                      # show CLI help
+make dev-cli ARGS="login --server https://statesu.com"
+make dev-cli ARGS="blog list"
+```
+
+To use a local server, run `make dev` in another terminal and pass `--server http://localhost:8080` to the CLI.
 
 Register through the dashboard (`http://localhost:5173`), confirm the email, and log in. Without Turnstile configured, register/login work straight away; with Turnstile, both halves of the widget (site + secret key) must be set together.
 

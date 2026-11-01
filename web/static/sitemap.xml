@@ -3,4 +3,13 @@
 	<url>
 		<loc>https://statesu.com/</loc>
 	</url>
+	<url>
+		<loc>https://statesu.com/docs/cli</loc>
+	</url>
+	<url>
+		<loc>https://statesu.com/docs/api</loc>
+	</url>
+	<url>
+		<loc>https://statesu.com/docs/integration</loc>
+	</url>
 </urlset>

@@ -1,4 +1,4 @@
-.PHONY: build run api dev test test-browser clean web fmt clippy docker-build docker-run docker-shell docker-clean
+.PHONY: build run api dev dev-cli test test-browser clean web fmt clippy docker-build docker-run docker-shell docker-clean
 
 BIN          := bin/statesu
 IMAGE        := statesu
@@ -16,6 +16,7 @@ SPA_DIST     := assets/dist
 # Vite dev server proxies /auth, /blogs and /public to it.
 API_PORT   ?= 8080
 VITE_PORT  ?= 5173
+ARGS       ?= --help
 
 $(WEB_MODULES): $(WEB_DIR)/package-lock.json
 	cd $(WEB_DIR) && npm ci
@@ -35,12 +36,12 @@ build: web
 # Run the API with the embedded docs from assets/dist; running `web` first
 # refreshes the docs, or use `make dev` for the HMR workflow.
 run: web
-	cargo run --release --locked
+	cargo run --release --locked --bin statesu
 
 # Backend-only runner: starts the API directly without touching the docs
 # build, so repeated runs stay fast.
 api:
-	cargo run --release --locked
+	cargo run --release --locked --bin statesu
 
 # Full-stack development: Rust API in the background plus the Vite dev server
 # with HMR proxying /auth, /blogs and /public. Ctrl+C or an exit stops both.
@@ -48,7 +49,7 @@ api:
 dev: $(WEB_MODULES)
 	@bash -c ' \
 		set -a; if test -f .env; then . ./.env; fi; set +a; \
-		STATESU_ADDR=127.0.0.1:$(API_PORT) cargo run --release --locked & \
+		STATESU_ADDR=127.0.0.1:$(API_PORT) cargo run --release --locked --bin statesu & \
 		API_PID=$$!; \
 		trap "kill $$API_PID 2>/dev/null" EXIT; \
 		printf "waiting for the API"; \
@@ -60,6 +61,10 @@ dev: $(WEB_MODULES)
 		done; \
 		echo " ready"; \
 		cd $(WEB_DIR) && STATESU_API=http://127.0.0.1:$(API_PORT) npm run dev -- --port $(VITE_PORT)'
+
+# CLI-only development; e.g. make dev-cli ARGS="blog list".
+dev-cli:
+	cargo run --locked --bin statesu-cli -- $(ARGS)
 
 test:
 	cargo test --all-targets --locked
