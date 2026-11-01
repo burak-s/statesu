@@ -79,12 +79,11 @@ test('network failure explains the origin requirement and fails closed', async (
 test('a slow API produces a timeout state instead of a hang', async () => {
 	const { target } = await boot({
 		url: 'https://site.example/blog/test',
-		fetchBehavior: (api, { signal }) =>
-			new Promise((_, reject) => {
-				signal.addEventListener('abort', () =>
-					reject(new AbortError('timeout'))
-				);
-			})
+		fetchBehavior: async () => ({
+			ok: true,
+			status: 200,
+			json: () => new Promise(() => {})
+		})
 	});
 	assert.match(target.textContent, /did not answer in time/);
 });

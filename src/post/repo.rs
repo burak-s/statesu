@@ -145,8 +145,11 @@ impl PostRepository {
 
     /// Full-row update for patches, quota-checked like inserts: the WHERE
     /// guard compares the byte cost of the replacement against the owner's
-    /// stored total, using the row's pre-update content length. Timestamp and
-    /// publication fields are decided by the service.
+    /// stored total, using the row's pre-update content length. Updates that
+    /// do not grow the stored bytes are accepted unconditionally, so an
+    /// account whose quota was lowered below its current usage can always
+    /// shrink its way back under the limit. Timestamp and publication fields
+    /// are decided by the service.
     pub async fn update_with_quota(
         &self,
         post: &PostRow,
@@ -157,10 +160,11 @@ impl PostRepository {
             "UPDATE posts SET slug = ?, title = ?, content_markdown = ?, status = ?, \
              updated_at = ?, published_at = ? \
              WHERE id = ? AND blog_id = ? AND deleted_at IS NULL \
-             AND (SELECT COALESCE(SUM(LENGTH(CAST(p.content_markdown AS BLOB))), 0) \
-                  FROM posts p JOIN blogs b ON p.blog_id = b.id \
-                  WHERE b.owner_id = ?) \
-                 - LENGTH(CAST(content_markdown AS BLOB)) + LENGTH(CAST(? AS BLOB)) <= ?",
+             AND (LENGTH(CAST(? AS BLOB)) <= LENGTH(CAST(content_markdown AS BLOB)) \
+                  OR (SELECT COALESCE(SUM(LENGTH(CAST(p.content_markdown AS BLOB))), 0) \
+                      FROM posts p JOIN blogs b ON p.blog_id = b.id \
+                      WHERE b.owner_id = ?) \
+                     - LENGTH(CAST(content_markdown AS BLOB)) + LENGTH(CAST(? AS BLOB)) <= ?)",
         )
         .bind(post.slug.as_str())
         .bind(post.title.as_str())
@@ -170,6 +174,7 @@ impl PostRepository {
         .bind(post.published_at)
         .bind(post.id.to_string())
         .bind(post.blog_id.to_string())
+        .bind(post.content_markdown.as_str())
         .bind(owner_id.to_string())
         .bind(post.content_markdown.as_str())
         .bind(max_bytes)

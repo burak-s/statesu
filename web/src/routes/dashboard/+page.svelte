@@ -73,23 +73,22 @@
 	let integrationCopied = $state(false);
 	let integrationNote = $state('');
 	let integrationOriginValid = $derived.by(() => integrationOrigin() !== '');
+	let integrationPathValid = $derived(validateIntegrationPath(integrationPath.trim()));
 	let integrationSnippet = $derived.by(() => {
-		if (!selectedBlog) return '';
-		const basePath = validateIntegrationPath(integrationPath) ? integrationPath : '/blog';
+		if (!selectedBlog || !integrationPathValid) return '';
 		return [
 			'<div id="statesu-post"></div>',
 			'<script defer',
 			`  src="${location.origin}/embed/v1.js"`,
 			`  data-blog="${selectedBlog.slug}"`,
-			`  data-base-path="${basePath}"`,
+			`  data-base-path="${integrationPath.trim()}"`,
 			'  data-target="statesu-post"><\/script>'
 		].join('\n');
 	});
 	let integrationExampleUrl = $derived.by(() => {
 		const origin = integrationOrigin();
-		if (!origin) return '';
-		const basePath = validateIntegrationPath(integrationPath) ? integrationPath : '/blog';
-		const prefix = basePath === '/' ? '' : basePath;
+		if (!origin || !integrationPathValid) return '';
+		const prefix = integrationPath.trim() === '/' ? '' : integrationPath.trim();
 		return `${origin}${prefix}/${posts[0]?.slug ?? 'post-slug'}`;
 	});
 
@@ -99,7 +98,9 @@
 		if (!raw) return '';
 		const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
 		try {
-			return new URL(withScheme).origin;
+			const url = new URL(withScheme);
+			if (url.protocol !== 'http:' && url.protocol !== 'https:') return '';
+			return url.origin;
 		} catch {
 			return '';
 		}
@@ -746,15 +747,19 @@
 					<h3>Website integration</h3>
 					{#if !selectedBlog}
 						<p class="note">Create a blog first.</p>
-					{:else if !integrationOriginValid && integrationOriginDraft.trim()!==''}
-						<p class="error" role="alert">The site address is not a usable origin.</p>
 					{:else}
 						<p>Connect your website once: every published post becomes one URL there. Your site serves one HTML template under the posts path, and the embed script below fetches and renders the content safely.</p>
 						<label for="integration-origin">Website address</label>
 						<input id="integration-origin" bind:value={integrationOriginDraft} placeholder="burakselcuk.me" />
+						{#if integrationOriginDraft.trim() !== '' && !integrationOriginValid}
+							<p class="error" role="alert">Enter a valid site address like burakselcuk.me or https://burakselcuk.me.</p>
+						{/if}
 						<label for="integration-path">Posts path</label>
 						<input id="integration-path" bind:value={integrationPath} placeholder="/blog" />
-						{#if !integrationOriginValid && integrationOriginDraft.trim()===''}
+						{#if !integrationPathValid}
+							<p class="error" role="alert">The posts path must be a single lowercase segment (like /blog) or exactly /.</p>
+						{/if}
+						{#if integrationOriginDraft.trim() === ''}
 							<p class="note">Enter the address of the site that should show these posts. If your address isn't the dashboard origin, add it to Allowed origins above.</p>
 						{/if}
 						{#if integrationExampleUrl}

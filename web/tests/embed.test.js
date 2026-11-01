@@ -4,7 +4,7 @@ import { JSDOM } from 'jsdom';
 
 // URL resolution and API building are DOM-free.
 import { parseBasePath, resolveSlug, SLUG_PATTERN } from '../src/embed/url.js';
-import { apiOriginFromScript, apiUrl } from '../src/embed/api.js';
+import { parseApiOrigin, apiUrl } from '../src/embed/api.js';
 
 // DOMPurify needs a window before its factory is instantiated, so the
 // content module is imported once a jsdom window is installed as global.
@@ -64,8 +64,15 @@ test('resolveSlug: root base path', () => {
 test('api URL building encodes slug segments', () => {
 	assert.equal(apiUrl('https://api.example', 'burak', 'test'), 'https://api.example/public/blogs/burak/posts/test');
 	assert.equal(apiUrl('https://api.example', 'burak', 'a/b'), 'https://api.example/public/blogs/burak/posts/a%2Fb');
-	assert.throws(() => apiOriginFromScript('not-a-url'), Error);
-	assert.equal(apiOriginFromScript('https://statesu.example/embed/v1.js?x'), 'https://statesu.example');
+});
+
+test('api origin policy: https always, http only for local hosts', () => {
+	assert.deepEqual(parseApiOrigin('https://statesu.example/embed/v1.js?x'), { ok: true, origin: 'https://statesu.example' });
+	assert.deepEqual(parseApiOrigin('http://localhost:8080/embed/v1.js'), { ok: true, origin: 'http://localhost:8080' });
+	assert.deepEqual(parseApiOrigin('http://127.0.0.1:8080/embed/v1.js'), { ok: true, origin: 'http://127.0.0.1:8080' });
+	assert.deepEqual(parseApiOrigin('http://[::1]:8080/embed/v1.js'), { ok: true, origin: 'http://[::1]:8080' });
+	assert.equal(parseApiOrigin('http://site.example/embed/v1.js').ok, false, 'plain http on a public host is refused');
+	assert.equal(parseApiOrigin('not-a-url').ok, false);
 });
 
 function sanitized(markdown) {
@@ -140,9 +147,11 @@ test('links: only http(s) and relative survive; target/rel are forced', () => {
 	assert.equal(elementCount(sanitized('[bad](javascript:alert(1))'), 'a'), 0);
 });
 
-test('ftp and mailto links are dropped with the strict policy', () => {
+test('unsafe links are demoted to text, the words stay', () => {
+	const doc = new JSDOM(`<body>${sanitized('[Contact us](mailto:help@example.com)')}</body>`).window.document;
+	assert.equal(doc.querySelector('a'), null, 'unsafe anchors are removed');
+	assert.match(doc.body.textContent, /Contact us/, 'the link text survives');
 	assert.equal(link(sanitized('[ftp](ftp://files.example/x)')), null);
-	assert.equal(link(sanitized('[mail](mailto:hi@example.com)')), null);
 });
 
 test('svg, math, style, forms and subscript tags are forbidden', () => {
@@ -160,9 +169,12 @@ test('html entities are not re-parsed as markup', () => {
 	assert.ok(doc.body.textContent.includes('<img src=x onerror=alert(1)>') || html.includes('&lt;img'));
 });
 
-test('fail-closed: renderer availability requires a DOM', () => {
+test('fail-closed: renderer availability requires a sanitizing DOM', () => {
 	assert.equal(buildRenderer(null), null);
-	assert.equal(buildRenderer({ document: null }), null);
+	// A window whose document cannot sanitize (no DOM walker support) must
+	// yield null — never a renderer that passes raw HTML through.
+	const unsupported = { location: { href: 'https://site.example/x' }, document: {} };
+	assert.equal(buildRenderer(unsupported), null);
 });
 
 test('DOMPurify always strips dangerous output even for pathological input', () => {

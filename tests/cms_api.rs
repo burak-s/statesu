@@ -1067,3 +1067,93 @@ fn empty_request(method: Method, path: &str) -> Request<Body> {
         .body(Body::empty())
         .expect("request")
 }
+
+/// A quota that was lowered below existing storage must not lock accounts:
+/// non-growing updates are accepted whatever the stored total is.
+#[tokio::test]
+async fn shrinks_stay_possible_when_usage_is_over_the_cap() {
+    let app = TestApp::build(|config| {
+        config.max_posts_per_user = 10;
+        config.max_total_content_bytes = 32 * 1024;
+    })
+    .await;
+    let token = register_token(&app, "over-cap@example.com", "stucknot7").await;
+    let blog = create_blog(&app, &token, "OverCap", "over-cap").await;
+    let blog_id = blog.json()["id"].as_str().unwrap().to_owned();
+    let created = create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({ "slug": "c1", "title": "t", "content_markdown": "a".repeat(12 * 1024) }),
+    )
+    .await;
+    assert_eq!(created.status, StatusCode::CREATED, "{}", created.text());
+    let post_id = created.json()["id"].as_str().unwrap().to_owned();
+    // Bypass the service the way a lowered config would: the stored content
+    // (40 KiB) now exceeds the account cap (32 KiB).
+    sqlx::query("UPDATE posts SET content_markdown = ? WHERE id = ?")
+        .bind("a".repeat(40 * 1024))
+        .bind(&post_id)
+        .execute(&app.app.pool)
+        .await
+        .expect("raw pad write");
+    // Growth is refused, shrinking is accepted, and the cap is re-earned.
+    let grown = patch_post(
+        &app,
+        &token,
+        &blog_id,
+        &post_id,
+        json!({ "content_markdown": "a".repeat(41 * 1024) }),
+    )
+    .await;
+    grown.assert_error(StatusCode::FORBIDDEN, "forbidden");
+    let shrink = patch_post(
+        &app,
+        &token,
+        &blog_id,
+        &post_id,
+        json!({ "content_markdown": "a".repeat(10 * 1024) }),
+    )
+    .await;
+    assert_eq!(shrink.status, StatusCode::OK, "{}", shrink.text());
+    let refill = patch_post(
+        &app,
+        &token,
+        &blog_id,
+        &post_id,
+        json!({ "content_markdown": "a".repeat(32 * 1024) }),
+    )
+    .await;
+    assert_eq!(refill.status, StatusCode::OK, "{}", refill.text());
+}
+
+/// The quota statement is atomic: racing creates against a tight cap yield
+/// exactly one success, never an overshoot.
+#[tokio::test]
+async fn concurrent_creates_cannot_overshoot_the_post_cap() {
+    let app = TestApp::build(|config| config.max_posts_per_user = 1).await;
+    let token = register_token(&app, "race@example.com", "onewriter7").await;
+    let blog = create_blog(&app, &token, "Race", "race").await;
+    let blog_id = blog.json()["id"].as_str().unwrap().to_owned();
+    let make = |slug: String| {
+        create_post(
+            &app,
+            &token,
+            &blog_id,
+            json!({ "slug": slug, "title": "t", "content_markdown": "x" }),
+        )
+    };
+    let first_request = make;
+    let (first, second) = tokio::join!(make("p1".to_owned()), make("p2".to_owned()));
+    let _ = first_request;
+    let successes = [&first, &second]
+        .iter()
+        .filter(|response| response.status == StatusCode::CREATED)
+        .count();
+    let refusals = [&first, &second]
+        .iter()
+        .filter(|response| response.status == StatusCode::FORBIDDEN)
+        .count();
+    assert_eq!(successes, 1, "exactly one create wins the cap");
+    assert_eq!(refusals, 1, "exactly one create is refused");
+}

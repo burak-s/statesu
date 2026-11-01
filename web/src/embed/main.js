@@ -9,13 +9,12 @@
 //
 // The base path itself shows a friendly empty state; pages outside it are
 // ignored; invalid post URLs fail without touching the API. Only the target
-// element's content is changed.
+// element's content is changed. The same deadline covers headers and body.
 
 import { parseBasePath, resolveSlug, SLUG_PATTERN, MAX_SLUG_LENGTH } from './url.js';
-import { apiOriginFromScript, apiUrl } from './api.js';
+import { parseApiOrigin, apiUrl } from './api.js';
 import { buildRenderer } from './content.js';
 
-const DEFAULT_BASE_PATH = '/blog';
 const DEFAULT_TARGET_ID = 'statesu-post';
 const FETCH_TIMEOUT_MS = 12_000;
 const LIBRARY_VERSION = 'v1';
@@ -58,23 +57,64 @@ function showState(root, message, isError) {
 	root.appendChild(node);
 }
 
-async function fetchPost(fetch, api, signalTimeoutMs) {
-	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(new DOMException('timeout', 'AbortError')), signalTimeoutMs);
+/**
+ * Fetches and fully parses a post under one deadline: an unresponsive API
+ * must fail on body reads too, not only on headers.
+ * Returns `{ post }` on success or `{ error: { kind, status? } }`.
+ */
+async function fetchPostJson(fetch, api, signalTimeoutMs) {
+	let timer;
+	const deadline = new Promise((_, reject) => {
+		timer = setTimeout(
+			() => reject(new DOMException('timeout', 'AbortError')),
+			signalTimeoutMs
+		);
+	});
+	const clearTimeoutSafe = () => clearTimeout(timer);
 	try {
-		const response = await fetch(api, {
-			method: 'GET',
-			credentials: 'omit',
-			headers: { Accept: 'application/json' },
-			redirect: 'error',
-			signal: controller.signal
-		});
-		return { response };
+		const response = await Promise.race([
+			fetch(api, {
+				method: 'GET',
+				credentials: 'omit',
+				headers: { Accept: 'application/json' },
+				redirect: 'error'
+			}),
+			deadline
+		]);
+		// Slow responses are also aborted so real hosts cancel body reads.
+		if (response.status === 0 || response.type === 'opaqueredirect') {
+			return { error: { kind: 'network' } };
+		}
+		if (!response.ok) {
+			return { error: { kind: 'http', status: response.status } };
+		}
+		const post = await Promise.race([response.json(), deadline]);
+		return { post };
 	} catch (error) {
-		return { error };
+		const kind = error?.name === 'AbortError'
+			? 'timeout'
+			: error?.name === 'SyntaxError' ? 'bad-response' : 'network';
+		return { error: { kind } };
 	} finally {
-		clearTimeout(timer);
+		clearTimeoutSafe();
 	}
+}
+
+/**
+ * Resolves the embed's own script element: prefer the currently executing
+ * script, fall back to the first configured match, and never pick an
+ * unrelated host page script that happens to carry a data-blog attribute.
+ */
+function ownScript(document) {
+	const current = document.currentScript;
+	if (current && current.getAttribute('data-blog') !== null) return current;
+	for (const script of document.querySelectorAll('script[data-blog]')) {
+		const src = script.getAttribute('src') ?? '';
+		if (src.endsWith('/embed/v1.js') || (current && script === current)) {
+			return script;
+		}
+	}
+	return document.querySelectorAll('script[data-blog]')[0] ?? null;
 }
 
 /**
@@ -91,12 +131,8 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 	}
 	window.__STATESU_EMBED_V1__ = true;
 
-	const scripts = document.querySelectorAll('script[data-blog]');
-	const script = scripts[0];
+	const script = ownScript(document);
 	if (!script) return;
-	if (scripts.length > 1) {
-		window.console?.warn?.('Multiple Statesu embed scripts found; using the first.');
-	}
 
 	const targetId = script.dataset.target || DEFAULT_TARGET_ID;
 	const target = document.getElementById(targetId);
@@ -147,31 +183,38 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 		return;
 	}
 
-	let apiOrigin;
-	try {
-		apiOrigin = script.dataset.api
-			? new URL(script.dataset.api).origin
-			: apiOriginFromScript(script.src);
-	} catch {
+	const configured = script.dataset.api
+		? parseApiOrigin(script.dataset.api)
+		: parseApiOrigin(script.getAttribute('src') ?? '');
+	if (!configured.ok) {
 		showState(
 			root,
-			'Statesu embed: the script address does not define a usable API origin.',
+			configured.reason === 'insecure'
+				? 'Statesu embed: the API must be served over HTTPS (except local development).'
+				: 'Statesu embed: the script address does not define a usable API origin.',
 			true
 		);
 		return;
 	}
 
 	showState(root, 'Loading post…', false);
-	const request = fetchPost(
+	const request = fetchPostJson(
 		window.fetch.bind(window),
-		apiUrl(apiOrigin, blog, resolution.slug),
+		apiUrl(configured.origin, blog, resolution.slug),
 		Math.max(0, timeoutMs)
 	);
 	request
-		.then(({ response, error }) => {
-			if (error) {
-				if (error.name === 'AbortError') {
+		.then((result) => {
+			if (result.error) {
+				const { kind, status } = result.error;
+				if (kind === 'timeout') {
 					showState(root, 'The content API did not answer in time. Try again.', true);
+				} else if (kind === 'http' && status === 404) {
+					showState(root, 'No published post at this address.', false);
+				} else if (kind === 'http') {
+					showState(root, `The content API returned ${status}.`, true);
+				} else if (kind === 'bad-response') {
+					showState(root, 'The content API returned an unparsable response.', true);
 				} else {
 					showState(
 						root,
@@ -181,45 +224,31 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 				}
 				return;
 			}
-			if (response.status === 404) {
-				showState(root, 'No published post at this address.', false);
+			const post = result.post;
+			if (
+				!post ||
+				typeof post.content_markdown !== 'string' ||
+				typeof post.title !== 'string'
+			) {
+				showState(root, 'The content API returned an unexpected response.', true);
 				return;
 			}
-			if (!response.ok) {
-				showState(root, `The content API returned ${response.status}.`, true);
+			const render = buildRenderer(window);
+			root.textContent = '';
+			const heading = element(document, 'h2', 'statesu-title');
+			heading.textContent = post.title;
+			root.appendChild(heading);
+			if (render === null) {
+				// Fail closed: no safe pipeline, no HTML. Show the raw Markdown
+				// as inert text instead of skipping content.
+				const body = element(document, 'pre', 'statesu-embed-fallback statesu-body');
+				body.textContent = post.content_markdown;
+				root.appendChild(body);
 				return;
 			}
-			response
-				.json()
-				.then((post) => {
-					if (
-						!post ||
-						typeof post.content_markdown !== 'string' ||
-						typeof post.title !== 'string'
-					) {
-						showState(root, 'The content API returned an unexpected response.', true);
-						return;
-					}
-					const render = buildRenderer(window);
-					root.textContent = '';
-					const heading = element(document, 'h2', 'statesu-title');
-					heading.textContent = post.title;
-					root.appendChild(heading);
-					if (render === null) {
-						// Fail closed: no safe pipeline, no HTML. Show the raw
-						// Markdown as inert text instead of skipping content.
-						const body = element(document, 'pre', 'statesu-embed-fallback statesu-body');
-						body.textContent = post.content_markdown;
-						root.appendChild(body);
-						return;
-					}
-					const body = element(document, 'div', 'statesu-body');
-					body.innerHTML = render(post.content_markdown);
-					root.appendChild(body);
-				})
-				.catch(() =>
-					showState(root, 'The content API returned an unparsable response.', true)
-				);
+			const body = element(document, 'div', 'statesu-body');
+			body.innerHTML = render(post.content_markdown);
+			root.appendChild(body);
 		});
 }
 

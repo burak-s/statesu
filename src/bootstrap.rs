@@ -29,7 +29,9 @@ use crate::post::service::PostService;
 pub struct App {
     pub state: AppState,
     pub router: Router,
-    pool: SqlitePool,
+    /// Exposed so the test harness can simulate states writes never reach,
+    /// such as a quota lowered below existing usage.
+    pub pool: SqlitePool,
 }
 
 impl App {

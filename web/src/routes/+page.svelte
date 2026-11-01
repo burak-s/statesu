@@ -234,6 +234,10 @@ wget -O- "$API/public/blogs/writing-desk/posts/hello-world" \
 		<p>To use URLs directly under <code>/test</code>, set <code>data-base-path="/"</code> — but then the template must not swallow your existing routes; rewrite only unknown single-segment paths.</p>
 		<h3>Access and safety</h3>
 		<p>Add your site's origin to the blog's allowed origins for browser reads; server-side rendering needs no origin. The embed script sanitizes Markdown with a strict allowlist (marked then DOMPurify, no raw HTML, no images, http(s) links only) and changes nothing outside the target element. Search engines still see your site's shell, not the post text: content is client-rendered; server-side rendering of the same JSON is the SEO route.</p>
+		<h3>Verification checklist</h3>
+		<p>After publishing, open a generated deep link directly — not only through in-site navigation — and refresh it: your hosting must serve the template for both. Withdraw, delete or switch a post to draft: the script shows a not-found state. Note that the browser still receives your page's HTTP 200 shell; unknown posts are reported client-side, so a server-side 404 status requires server-side rendering.</p>
+		<h3>CSP for the host site</h3>
+		<p>If your page ships a Content-Security-Policy, it must allow the Statesu origin twice: <code>script-src https://statesu.example</code> for the embed file itself and <code>connect-src https://statesu.example</code> for the JSON fetch.</p>
 	</section>
 
 	<section id="reference">
