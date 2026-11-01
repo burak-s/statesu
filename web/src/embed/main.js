@@ -1,5 +1,6 @@
 // Statesu embed v1: renders the published post whose slug the current page
-// address contains, exactly once per page, into one target element.
+// address contains (or data-post explicitly selects), exactly once per page,
+// into one target element.
 //
 //   <script defer
 //     src="https://statesu.example/embed/v1.js"
@@ -175,7 +176,12 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 		return;
 	}
 
-	const resolution = resolveSlug(window.location.href, basePath);
+	const fixedPost = script.getAttribute('data-post');
+	const resolution = fixedPost === null
+		? resolveSlug(window.location.href, basePath)
+		: validBlogSlug(fixedPost)
+			? { kind: 'post', slug: fixedPost }
+			: { kind: 'invalid' };
 	if (resolution.kind === 'skip') return;
 
 	mount();

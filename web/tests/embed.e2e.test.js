@@ -48,6 +48,39 @@ test('successful post renders sanitized content and forced link attributes', asy
 	);
 });
 
+test('data-post renders a fixed announcement independently of the page URL', async () => {
+	for (const url of ['https://site.example/', 'https://site.example/blog/other']) {
+		let requested;
+		const { target } = await boot({
+			url,
+			scriptAttrs: { 'data-post': 'guncel' },
+			fetchBehavior: async (api) => {
+				requested = api;
+				return {
+					ok: true, status: 200,
+					json: async () => ({ title: 'Duyurular', content_markdown: '**Yeni yazı**' })
+				};
+			}
+		});
+		assert.equal(requested, 'https://statesu.example/public/blogs/burak/posts/guncel');
+		assert.equal(target.querySelector('.statesu-title').textContent, 'Duyurular');
+		assert.equal(target.querySelector('strong').textContent, 'Yeni yazı');
+	}
+});
+
+test('invalid data-post never fetches or falls back to the page slug', async () => {
+	for (const slug of ['', 'Test', '../private', 'a/b', 'a%2Fb', 'a'.repeat(64)]) {
+		let calls = 0;
+		const { target } = await boot({
+			url: 'https://site.example/blog/test',
+			scriptAttrs: { 'data-post': slug },
+			fetchBehavior: async () => { calls += 1; throw new Error('must not fetch'); }
+		});
+		assert.equal(calls, 0);
+		assert.match(target.textContent, /not a valid blog post address/);
+	}
+});
+
 test('404 renders a plain not-found state; irrelevant pages stay untouched', async () => {
 	const { target } = await boot({
 		url: 'https://site.example/blog/missing',
