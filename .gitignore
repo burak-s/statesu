@@ -10,6 +10,8 @@
 /web/node_modules/
 /web/build/
 /web/.svelte-kit/
+/web/test-results/
+/web/playwright-report/
 
 # Node (only if you ever switch to npm-based Tooling)
 node_modules/

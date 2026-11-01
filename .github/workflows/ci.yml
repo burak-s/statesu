@@ -49,6 +49,23 @@ jobs:
               cp -r build/. ../assets/dist/
               test -f ../assets/dist/embed/v1.js
 
+         - name: Install Playwright Chromium
+           working-directory: web
+           run: npx playwright install chromium
+
+         - name: Browser security and integration tests
+           working-directory: web
+           run: npm run test:browser
+
+         - name: Upload browser failure artifacts
+           if: failure()
+           uses: actions/upload-artifact@v4
+           with:
+              name: browser-test-results
+              path: web/test-results/
+              if-no-files-found: ignore
+              retention-days: 7
+
          - name: Format
            run: cargo fmt --all --check
 

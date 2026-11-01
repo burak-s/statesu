@@ -1,4 +1,4 @@
-.PHONY: build run api dev test clean web fmt clippy docker-build docker-run docker-shell docker-clean
+.PHONY: build run api dev test test-browser clean web fmt clippy docker-build docker-run docker-shell docker-clean
 
 BIN          := bin/statesu
 IMAGE        := statesu
@@ -63,6 +63,10 @@ dev: $(WEB_MODULES)
 
 test:
 	cargo test --all-targets --locked
+
+# Builds the frontend and starts isolated API/consumer servers automatically.
+test-browser: $(WEB_MODULES)
+	cd $(WEB_DIR) && npm run test:browser
 
 fmt:
 	cargo fmt --all --check
