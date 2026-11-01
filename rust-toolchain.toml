@@ -1,0 +1,6 @@
+# Pinned toolchain for reproducible builds: everyone compiles with the same
+# compiler, matching the Docker image (rust:1.99.1-alpine) and the MSRV in
+# Cargo.toml (rust-version = "1.99"). Bump all three together.
+[toolchain]
+channel = "1.99.1"
+profile = "default"
