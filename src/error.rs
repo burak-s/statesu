@@ -20,6 +20,9 @@ pub enum Error {
     PatNotFound,
     /// Login succeeded cryptographically but the address was never confirmed.
     EmailNotVerified,
+    /// The credentials were fine to check but the human-verification token was
+    /// missing, stale or rejected by the captcha provider.
+    TurnstileFailed,
     SlugTaken,
     DomainTaken,
     PayloadTooLarge,
@@ -94,6 +97,7 @@ impl Error {
             Error::PostNotFound => "post not found",
             Error::PatNotFound => "token not found",
             Error::EmailNotVerified => "email not verified",
+            Error::TurnstileFailed => "turnstile verification failed",
             Error::SlugTaken => "slug already in use",
             Error::DomainTaken => "domain already claimed",
             Error::PayloadTooLarge => "request body too large",
@@ -123,6 +127,7 @@ impl Error {
             Error::Forbidden => StatusCode::FORBIDDEN,
             Error::BlogNotFound | Error::PostNotFound | Error::PatNotFound => StatusCode::NOT_FOUND,
             Error::EmailNotVerified => StatusCode::FORBIDDEN,
+            Error::TurnstileFailed => StatusCode::FORBIDDEN,
             Error::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Error::UnsupportedMediaType => StatusCode::UNSUPPORTED_MEDIA_TYPE,
             Error::RateLimited { .. } => StatusCode::TOO_MANY_REQUESTS,

@@ -1,6 +1,12 @@
 <script>
 	import { isEmail, request } from '#lib/api.js';
 	import { isValidPostPath, originFromSiteAddress } from '#lib/integration.js';
+	import Turnstile from '#lib/components/Turnstile.svelte';
+
+	// The Turnstile site key is baked in at build time (web/.env.example);
+	// an empty key keeps the credential forms widget-free.
+	const turnstileSiteKey = import.meta.env.PUBLIC_TURNSTILE_SITE_KEY || '';
+
 
 	// Session ----------------------------------------------------------------
 	/** @type {{ id: string, email: string } | null} */
@@ -10,6 +16,9 @@
 	let authPassword = $state('');
 	let authError = $state('');
 	let authBusy = $state(false);
+	let turnstileToken = $state('');
+	/** @type {{ reset(): void } | null} */
+	let challenge = $state(null);
 	let notice = $state(''); // register → "check your inbox" state
 	let canResend = $state(false);
 
@@ -181,12 +190,20 @@
 			authError = 'Enter a valid email and a password of at least 8 characters.';
 			return;
 		}
+		const body = { email: authEmail.trim(), password: authPassword };
+		if (turnstileSiteKey) {
+			if (!turnstileToken) {
+				authError = 'Complete the human-verification challenge before continuing.';
+				return;
+			}
+			body.turnstile = turnstileToken;
+		}
 		authBusy = true;
-		const result = await request(`/auth/${authMode}`, {
-			method: 'POST',
-			body: { email: authEmail.trim(), password: authPassword }
-		});
+		const result = await request(`/auth/${authMode}`, { method: 'POST', body });
 		authBusy = false;
+		// Tokens are single-use: whatever the answer, the next attempt needs a
+		// fresh challenge.
+		challenge?.reset();
 		if (!result.ok) {
 			if (signedOut(result)) return;
 			authError = result.error;
@@ -542,6 +559,9 @@
 			<input id="auth-email" type="email" autocomplete="email" bind:value={authEmail} required />
 			<label for="auth-password">Password</label>
 			<input id="auth-password" type="password" autocomplete="current-password" bind:value={authPassword} required />
+			{#if turnstileSiteKey}
+				<Turnstile bind:token={turnstileToken} bind:this={challenge} sitekey={turnstileSiteKey} />
+			{/if}
 			<div class="row">
 				<button type="submit" disabled={authBusy}>{authMode === 'login' ? 'Sign in' : 'Create account'}</button>
 				<button type="button" class="link" onclick={() => { authMode = authMode === 'login' ? 'register' : 'login'; authError = ''; notice = ''; }}>

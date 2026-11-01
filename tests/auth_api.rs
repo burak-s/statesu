@@ -759,3 +759,52 @@ async fn register_time_is_stable_and_expiration_fields_match_the_clock() {
     }
     let _ = NOW;
 }
+
+// Turnstile ----------------------------------------------------------------
+
+#[tokio::test]
+async fn turnstile_is_optional_without_a_configured_secret() {
+    let app = TestApp::new().await;
+    let body = json!({ "email": EMAIL, "password": PASSWORD, "turnstile": "anything" });
+    let response = app
+        .send(json_request(Method::POST, "/auth/register", body))
+        .await;
+    assert_eq!(response.status, StatusCode::ACCEPTED, "{}", response.text());
+}
+
+#[tokio::test]
+async fn turnstile_guards_register_and_login_when_injected() {
+    let app = TestApp::with_turnstile(|_| {}).await;
+
+    // No token at all, empty token and a wrong token all fail the same way,
+    // before any credential work.
+    let attempts = [
+        json!({ "email": EMAIL, "password": PASSWORD }),
+        json!({ "email": EMAIL, "password": PASSWORD, "turnstile": "  " }),
+        json!({ "email": EMAIL, "password": PASSWORD, "turnstile": "wrong" }),
+    ];
+    for body in attempts {
+        app.send(json_request(Method::POST, "/auth/register", body.clone()))
+            .await
+            .assert_error(StatusCode::FORBIDDEN, "turnstile verification failed");
+        app.send(json_request(Method::POST, "/auth/login", body))
+            .await
+            .assert_error(StatusCode::FORBIDDEN, "turnstile verification failed");
+    }
+
+    // The accepted token unlocks both routes; login still needs verification.
+    let good =
+        json!({ "email": EMAIL, "password": PASSWORD, "turnstile": common::TestTurnstile::TOKEN });
+    let registered = app
+        .send(json_request(Method::POST, "/auth/register", good.clone()))
+        .await;
+    assert_eq!(
+        registered.status,
+        StatusCode::ACCEPTED,
+        "{}",
+        registered.text()
+    );
+    app.send(json_request(Method::POST, "/auth/login", good))
+        .await
+        .assert_error(StatusCode::FORBIDDEN, "email not verified");
+}

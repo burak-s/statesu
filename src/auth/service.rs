@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::auth::pat_repo::{NewPat, PatRecord, PatRepository};
 use crate::auth::repo::UserRepository;
 use crate::auth::session_repo::{SESSION_ABSOLUTE_TTL, SessionRepository};
+use crate::auth::turnstile::TurnstileVerifier;
 use crate::auth::verification_repo::{RESEND_COOLDOWN_SECS, VerificationTokenRepository};
 use crate::auth::{AcceptedResponse, CredentialsRequest, MeResponse, UserRecord, VerifyRequest};
 use crate::clock::Clock;
@@ -25,6 +26,7 @@ pub struct AuthService {
     hasher: PasswordHasher,
     cipher: EmailCipher,
     mailer: Arc<dyn Mailer>,
+    turnstile: Option<Arc<dyn TurnstileVerifier>>,
     clock: Arc<dyn Clock>,
     public_url: crate::config::PublicUrl,
 }
@@ -62,6 +64,7 @@ impl AuthService {
         hasher: PasswordHasher,
         cipher: EmailCipher,
         mailer: Arc<dyn Mailer>,
+        turnstile: Option<Arc<dyn TurnstileVerifier>>,
         clock: Arc<dyn Clock>,
         public_url: crate::config::PublicUrl,
     ) -> AuthService {
@@ -73,14 +76,32 @@ impl AuthService {
             hasher,
             cipher,
             mailer,
+            turnstile,
             clock,
             public_url,
+        }
+    }
+
+    /// The human gate for register and login: with no secret configured the
+    /// check vanishes; otherwise a missing or empty token counts as a
+    /// rejection, identically to an unsolved challenge.
+    async fn verify_turnstile(&self, token: Option<&str>) -> Result<(), Error> {
+        match self.turnstile.as_ref() {
+            None => Ok(()),
+            Some(verifier) => {
+                let token = token.filter(|t| !t.trim().is_empty());
+                match token {
+                    Some(token) => verifier.verify(token, None).await,
+                    None => Err(Error::TurnstileFailed),
+                }
+            }
         }
     }
 
     /// Creates an unverified account and starts address confirmation; no
     /// credential of any kind is issued before the address is verified.
     pub async fn register(&self, request: &CredentialsRequest) -> Result<AcceptedResponse, Error> {
+        self.verify_turnstile(request.turnstile.as_deref()).await?;
         let email = normalize_email(&request.email);
         validate_email(&email)?;
         crate::crypto::password::check_password(&request.password)?;
@@ -102,6 +123,7 @@ impl AuthService {
     /// Credential check plus session minting. Unverified accounts are
     /// rejected after the same generic failure pattern as wrong passwords.
     pub async fn login(&self, request: &CredentialsRequest) -> Result<LoginOutcome, Error> {
+        self.verify_turnstile(request.turnstile.as_deref()).await?;
         let email = normalize_email(&request.email);
         if email.is_empty() || request.password.is_empty() {
             return Err(Error::InvalidCredentials);

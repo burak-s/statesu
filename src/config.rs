@@ -19,6 +19,7 @@ pub const ARGON2_CONCURRENCY_ENV: &str = "STATESU_ARGON2_CONCURRENCY";
 pub const MAX_POSTS_PER_USER_ENV: &str = "STATESU_MAX_POSTS_PER_USER";
 pub const MAX_TOTAL_CONTENT_BYTES_ENV: &str = "STATESU_MAX_TOTAL_CONTENT_BYTES";
 pub const LOG_JSON_ENV: &str = "STATESU_LOG_JSON";
+pub const TURNSTILE_SECRET_KEY_ENV: &str = "STATESU_TURNSTILE_SECRET_KEY";
 
 const DEFAULT_ADDR: &str = ":8080";
 const DEFAULT_DB: &str = "db/statesu.db";
@@ -58,6 +59,8 @@ pub struct Config {
     /// Hard cap on stored Markdown bytes per user across all of their blogs.
     pub max_total_content_bytes: usize,
     pub log_json: bool,
+    /// Cloudflare Turnstile secret key; `None` disables the human check.
+    pub turnstile_secret: Option<String>,
 }
 
 /// The public `scheme://host[:port]` origin parsed from `PUBLIC_URL_ENV`.
@@ -245,6 +248,7 @@ impl Config {
             .map(|v| parse_usize(&v, MAX_TOTAL_CONTENT_BYTES_ENV))
             .transpose()?
             .unwrap_or(DEFAULT_MAX_TOTAL_CONTENT_BYTES);
+        let turnstile_secret = env_no_empty(TURNSTILE_SECRET_KEY_ENV)?;
         let log_json = match env_no_empty(LOG_JSON_ENV)? {
             Some(v) => match v.to_ascii_lowercase().as_str() {
                 "true" | "1" => true,
@@ -275,6 +279,7 @@ impl Config {
             max_posts_per_user,
             max_total_content_bytes,
             log_json,
+            turnstile_secret,
         })
     }
 }

@@ -2,6 +2,7 @@ pub mod pat_repo;
 pub mod repo;
 pub mod service;
 pub mod session_repo;
+pub mod turnstile;
 pub mod verification_repo;
 
 #[derive(Debug, Clone)]
@@ -28,12 +29,16 @@ pub struct MeResponse {
     pub email: String,
 }
 
-/// Strict JSON request body for register, login and resend.
+/// Strict JSON request body for register and login. `turnstile` is only read
+// when the server has a Turnstile secret configured; unknown fields are still
+// rejected so the body cannot smuggle extra state.
 #[derive(Debug, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CredentialsRequest {
     pub email: String,
     pub password: String,
+    #[serde(default)]
+    pub turnstile: Option<String>,
 }
 
 /// Generic 202 body for register and resend: deliberately identical for

@@ -11,7 +11,8 @@ use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, HeaderValue, Method, Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use statesu::bootstrap::{App, build_app_with_mailer};
+use statesu::auth::turnstile::TurnstileVerifier;
+use statesu::bootstrap::{App, build_app_with_turnstile};
 use statesu::clock::TestClock;
 use statesu::config::{Config, IpNet};
 use statesu::http::static_files::{StaticAssets, StaticFile};
@@ -84,9 +85,45 @@ impl Mailer for TestMailer {
     }
 }
 
+/// Stub human-verification: accepts exactly the expected token, rejects
+/// anything else, without touching the network.
+pub struct TestTurnstile {
+    required: &'static str,
+}
+
+impl TestTurnstile {
+    pub const TOKEN: &'static str = "good-turnstile-token";
+
+    pub fn boxed() -> Arc<dyn TurnstileVerifier> {
+        Arc::new(TestTurnstile {
+            required: Self::TOKEN,
+        })
+    }
+}
+
+impl TurnstileVerifier for TestTurnstile {
+    fn verify<'a>(
+        &'a self,
+        token: &'a str,
+        _remote_ip: Option<&'a str>,
+    ) -> statesu::auth::turnstile::TurnstileFuture<'a> {
+        let result = if token == self.required {
+            Ok(())
+        } else {
+            Err(statesu::error::Error::TurnstileFailed)
+        };
+        Box::pin(async move { result })
+    }
+}
+
 impl TestApp {
     pub async fn new() -> TestApp {
         Self::build(|_| {}).await
+    }
+
+    /// An app with a Turnstile verifier injected, whatever the config says.
+    pub async fn with_turnstile(configure: impl FnOnce(&mut Config)) -> TestApp {
+        Self::build_full(configure, Some(TestTurnstile::boxed())).await
     }
 
     pub async fn with_limits(general: u64, auth: u64) -> TestApp {
@@ -98,16 +135,24 @@ impl TestApp {
     }
 
     pub async fn build(configure: impl FnOnce(&mut Config)) -> TestApp {
+        Self::build_full(configure, None).await
+    }
+
+    async fn build_full(
+        configure: impl FnOnce(&mut Config),
+        turnstile: Option<Arc<dyn TurnstileVerifier>>,
+    ) -> TestApp {
         let temp = tempfile::tempdir().expect("temp dir");
         let mut config = test_config(temp.path().join("statesu.db"));
         configure(&mut config);
         let clock = Arc::new(TestClock::at_start(NOW));
         let (mailer, sent_mail) = TestMailer::shared();
-        let app = build_app_with_mailer(
+        let app = build_app_with_turnstile(
             config,
             clock.clone(),
             Arc::new(TestAssets::standard()),
             Arc::new(mailer),
+            turnstile,
         )
         .await
         .expect("build app");
@@ -430,6 +475,7 @@ pub fn test_config(db_path: std::path::PathBuf) -> Config {
         max_posts_per_user: 64,
         max_total_content_bytes: 2 * 1024 * 1024,
         log_json: false,
+        turnstile_secret: None,
     }
 }
 

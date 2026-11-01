@@ -9,6 +9,7 @@ use crate::auth::pat_repo::PatRepository;
 use crate::auth::repo::UserRepository;
 use crate::auth::service::AuthService;
 use crate::auth::session_repo::SessionRepository;
+use crate::auth::turnstile::{CloudflareTurnstile, TurnstileVerifier};
 use crate::auth::verification_repo::VerificationTokenRepository;
 use crate::blog::repo::BlogRepository;
 use crate::blog::service::BlogService;
@@ -43,11 +44,15 @@ impl App {
 
 /// Docs CSP compatible with the Svelte build: inline Svelte/JSON-LD scripts,
 /// Google Fonts stylesheets and font files, no other remote origins.
+// The Turnstile origins cover the login/register widget: its script comes
+// from `challenges.cloudflare.com` and renders inside an iframe from the
+// same origin. The dashboard pages are served with these headers too.
 const DOCS_CSP: &str = "default-src 'self'; \
-    script-src 'self' 'unsafe-inline'; \
+    script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; \
     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
     font-src 'self' https://fonts.gstatic.com; \
     connect-src 'self'; \
+    frame-src https://challenges.cloudflare.com; \
     img-src 'self' data:; \
     object-src 'none'; \
     base-uri 'self'; \
@@ -65,7 +70,11 @@ pub async fn build_app(
         config.resend_api_key.clone(),
         config.mail_from.clone(),
     )?);
-    build_app_with_mailer(config, clock, assets, mailer).await
+    let turnstile: Option<Arc<dyn TurnstileVerifier>> = match config.turnstile_secret.clone() {
+        Some(secret) => Some(Arc::new(CloudflareTurnstile::new(secret)?)),
+        None => None,
+    };
+    build_app_with_turnstile(config, clock, assets, mailer, turnstile).await
 }
 
 /// Composition root with an injected mailer; tests substitute a recorder
@@ -75,6 +84,18 @@ pub async fn build_app_with_mailer(
     clock: Arc<dyn Clock>,
     assets: Arc<dyn StaticAssets>,
     mailer: Arc<dyn crate::mail::Mailer>,
+) -> Result<App, Error> {
+    build_app_with_turnstile(config, clock, assets, mailer, None).await
+}
+
+/// Composition root additionally accepting a human-verification seam;
+/// `None` means Turnstile is disabled even with a configured secret.
+pub async fn build_app_with_turnstile(
+    config: Config,
+    clock: Arc<dyn Clock>,
+    assets: Arc<dyn StaticAssets>,
+    mailer: Arc<dyn crate::mail::Mailer>,
+    turnstile: Option<Arc<dyn TurnstileVerifier>>,
 ) -> Result<App, Error> {
     let pool = open_database(&config).await?;
     let users = UserRepository::new(pool.clone());
@@ -92,6 +113,7 @@ pub async fn build_app_with_mailer(
         hasher,
         cipher.clone(),
         mailer.clone(),
+        turnstile.clone(),
         clock.clone(),
         config.public_url.clone(),
     );
