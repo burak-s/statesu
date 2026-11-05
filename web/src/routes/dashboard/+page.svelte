@@ -296,8 +296,7 @@
 	async function deletePat(pat) {
 		if (!pat.delete_warned) {
 			pat.delete_warned = true;
-			patError = `Delete “${pat.name}” again to confirm. Clients using it stop working immediately.`;
-			refreshPats();
+			patError = `Confirm revocation of “${pat.name}”. Clients using it stop working immediately.`;
 			return;
 		}
 		patError = '';
@@ -831,7 +830,10 @@
 											<td>{pat.expires_at === null ? 'Never' : formatTimestamp(pat.expires_at)}</td>
 											<td>{formatTimestamp(pat.last_used_at)}</td>
 											<td class="actions">
-												<button type="button" class="link" onclick={() => deletePat(pat)}>Revoke</button>
+												<button type="button" class="link" onclick={() => deletePat(pat)}>{pat.delete_warned ? 'Confirm revocation' : 'Revoke'}</button>
+												{#if pat.delete_warned}
+													<button type="button" class="link" onclick={() => { pat.delete_warned = false; patError = ''; }}>Cancel</button>
+												{/if}
 											</td>
 										</tr>
 									{/each}

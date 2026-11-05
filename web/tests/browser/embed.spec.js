@@ -147,6 +147,22 @@ test('CLI login signs in on the website, approves access, exchanges PKCE code an
 	}
 });
 
+test('dashboard makes token revocation confirmation explicit and revokes access immediately', async ({ page, request, account }) => {
+	await signIn(page, account);
+	await page.getByRole('button', { name: 'API tokens', exact: true }).click();
+	const row = page.getByRole('row').filter({ hasText: 'Browser tests' });
+	await row.getByRole('button', { name: 'Revoke', exact: true }).click();
+	await expect(page.getByRole('alert')).toContainText('Clients using it stop working immediately.');
+	expect((await request.get(`${API}/blogs`, { headers: account.headers })).status()).toBe(200);
+	await expect(row.getByRole('button', { name: 'Confirm revocation', exact: true })).toBeVisible();
+	await row.getByRole('button', { name: 'Cancel', exact: true }).click();
+	await expect(page.getByRole('alert')).toHaveCount(0);
+	await row.getByRole('button', { name: 'Revoke', exact: true }).click();
+	await row.getByRole('button', { name: 'Confirm revocation', exact: true }).click();
+	await expect(row).toHaveCount(0);
+	expect((await request.get(`${API}/blogs`, { headers: account.headers })).status()).toBe(401);
+});
+
 test('CLI authorization rejects external callbacks before offering sign-in', async ({ page }) => {
 	await page.goto(`${API}/cli/authorize?redirect_uri=https://evil.example/callback&code_challenge=${'a'.repeat(43)}&state=${'b'.repeat(64)}`);
 	await expect(page.getByRole('alert')).toContainText('Invalid CLI authorization link');
