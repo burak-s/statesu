@@ -22,6 +22,19 @@ pub struct Blog {
     pub origins: Vec<String>,
 }
 
+/// Uploaded media as the server reports it; `public_url` is the address
+/// that goes straight into Markdown.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Media {
+    pub id: String,
+    pub mime: String,
+    pub status: String,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub stored_bytes: i64,
+    pub public_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Post {
     pub id: String,
@@ -267,6 +280,65 @@ impl Api {
             self.request(
                 reqwest::Method::DELETE,
                 &format!("/blogs/{blog_id}/posts/{post_id}"),
+                Some(pat),
+            )
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    // Media ----------------------------------------------------------------
+
+    pub async fn upload_media(
+        &self,
+        pat: &str,
+        blog_id: &str,
+        bytes: Vec<u8>,
+    ) -> Result<Media, CliError> {
+        self.json_ok(
+            self.request(
+                reqwest::Method::POST,
+                &format!("/blogs/{blog_id}/media"),
+                Some(pat),
+            )
+            .body(bytes)
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn media_list(
+        &self,
+        pat: &str,
+        blog_id: &str,
+        page: u32,
+        size: u32,
+    ) -> Result<Paged<Media>, CliError> {
+        self.json_ok(
+            self.request(
+                reqwest::Method::GET,
+                &format!("/blogs/{blog_id}/media"),
+                Some(pat),
+            )
+            .query(&[("page", page.to_string()), ("size", size.to_string())])
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn delete_media(
+        &self,
+        pat: &str,
+        blog_id: &str,
+        media_id: &str,
+    ) -> Result<(), CliError> {
+        self.unit_ok(
+            self.request(
+                reqwest::Method::DELETE,
+                &format!("/blogs/{blog_id}/media/{media_id}"),
                 Some(pat),
             )
             .send()

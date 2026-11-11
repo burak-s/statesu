@@ -70,6 +70,35 @@ pub enum Command {
     /// Write, publish and manage posts.
     #[command(subcommand)]
     Post(PostCommand),
+    /// Upload and manage media images (posts reference them by URL).
+    #[command(subcommand)]
+    Media(MediaCommand),
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MediaCommand {
+    /// Upload one image; prints the Markdown reference it produced.
+    Upload {
+        /// Path of the image file (JPEG, PNG or WebP).
+        file: PathBuf,
+    },
+    /// List uploaded media, newest first.
+    List {
+        /// 1-based page number [default: 1].
+        #[arg(long)]
+        page: Option<u32>,
+        /// Page size, capped at 100 by the server [default: 20].
+        #[arg(long)]
+        size: Option<u32>,
+    },
+    /// Delete one media image (confirmation unless --yes). The id may be
+    /// the media id itself or a pasted public URL.
+    Delete {
+        target: String,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -166,6 +195,7 @@ impl Cli {
             Command::Logout => logout(shared.server.as_deref()).await,
             Command::Blog(command) => blog_command(shared, command).await,
             Command::Post(command) => post_command(shared, command).await,
+            Command::Media(command) => media_command(shared, command).await,
         }
     }
 }
@@ -397,6 +427,165 @@ async fn blog_command(shared: &Shared, command: BlogCommand) -> Result<(), CliEr
             authed.settings.blog_id = Some(found.id.clone());
             authed.settings.save()?;
             println!("Now using blog '{}'.", found.name);
+        }
+    }
+    Ok(())
+}
+
+// Media commands ---------------------------------------------------------
+
+fn media_markdown(media: &client::Media, source_name: Option<&str>) -> String {
+    let url = match media.public_url.as_deref() {
+        Some(url) if !url.is_empty() => url.to_owned(),
+        _ => return String::new(),
+    };
+    let base = source_name
+        .map(|name| {
+            std::path::Path::new(name)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("")
+                .to_owned()
+        })
+        .unwrap_or_default()
+        .trim()
+        .replace('[', "(")
+        .replace(']', ")");
+    let alt: &str = if base.is_empty() {
+        "image"
+    } else {
+        base.as_str()
+    };
+    format!("![{alt}]({url})")
+}
+
+/// Accepts the media id itself or a pasted public URL whose object path is
+/// `blogs/{blog}/{media}/{label}.{ext}`; every other shape is a usage error.
+fn media_id_from_target(target: &str) -> Result<String, CliError> {
+    if let Ok(id) = parse_uuid(target) {
+        return Ok(id);
+    }
+    let position = target.find("/blogs/").ok_or_else(|| {
+        CliError::usage(
+            "media target must be the media id or its public URL containing /blogs/<blog>/<media>/",
+        )
+    })?;
+    let after = &target[position + 7..];
+    let media_part = after.split_once('/').map(|(_, rest)| rest).unwrap_or("");
+    let id = media_part
+        .split(['/'])
+        .next()
+        .ok_or_else(|| CliError::usage("cannot read the media id from that URL"))?;
+    parse_uuid(id).map_err(|()| CliError::usage("cannot read the media id from that URL"))
+}
+
+fn human_bytes(total: i64) -> String {
+    if total < 1024 {
+        return format!("{total} B");
+    }
+    if total < 1024 * 1024 {
+        return format!("{:.1} KiB", total as f64 / 1024.0);
+    }
+    format!("{:.1} MiB", total as f64 / 1024.0 / 1024.0)
+}
+
+async fn media_command(shared: &Shared, command: MediaCommand) -> Result<(), CliError> {
+    let authed = Authed::new(shared).await?;
+    let blog_id = authed.blog_id().await?;
+    match command {
+        MediaCommand::Upload { file } => {
+            let source_name = file
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(str::to_owned);
+            let bytes = std::fs::read(&file).map_err(|err| {
+                CliError::usage(format!("cannot read '{}': {err}", file.display()))
+            })?;
+            let media = authed
+                .api
+                .upload_media(&authed.pat, &blog_id, bytes)
+                .await?;
+            let markdown = media_markdown(&media, source_name.as_deref());
+            if authed.json {
+                return print_json(&serde_json::json!({
+                    "media": media,
+                    "markdown": markdown,
+                }));
+            }
+            match (media.width, media.height) {
+                (Some(width), Some(height)) => {
+                    println!("stored: {} {}x{} ({})", media.id, width, height, media.mime);
+                }
+                _ => println!("stored: {} ({})", media.id, media.mime),
+            }
+            println!(
+                "href:   {}",
+                media.public_url.as_deref().unwrap_or("(no public url)")
+            );
+            if markdown.is_empty() {
+                println!("note:   media has no public URL; paste it manually");
+            } else {
+                println!("markdown: {markdown}");
+            }
+        }
+        MediaCommand::List { page, size } => {
+            let page = page.unwrap_or(1);
+            let size = size.unwrap_or(crate::pagination::DEFAULT_PAGE_SIZE);
+            let listed = authed
+                .api
+                .media_list(&authed.pat, &blog_id, page, size)
+                .await?;
+            if authed.json {
+                return print_json(&listed);
+            }
+            if listed.items.is_empty() {
+                println!("No media yet. Upload one: `stscli media upload image.jpg`");
+                return Ok(());
+            }
+            let rows: Vec<Vec<String>> = listed
+                .items
+                .iter()
+                .map(|media| {
+                    let dimensions = match (media.width, media.height) {
+                        (Some(width), Some(height)) => format!("{width}x{height}"),
+                        _ => "-".to_owned(),
+                    };
+                    vec![
+                        media.id.clone(),
+                        media.mime.clone(),
+                        dimensions,
+                        human_bytes(media.stored_bytes),
+                        media.public_url.clone().unwrap_or_default(),
+                    ]
+                })
+                .collect();
+            print!(
+                "{}",
+                output::table(&["id", "mime", "size", "bytes", "public url"], &rows)
+            );
+        }
+        MediaCommand::Delete { target, yes } => {
+            let media_id = media_id_from_target(&target)?;
+            if !yes {
+                print!("Delete media {media_id}? This cannot be undone [y/N] ");
+                std::io::stdout()
+                    .flush()
+                    .map_err(|err| CliError::Config(format!("cannot prompt: {err}")))?;
+                let mut answer = String::new();
+                std::io::stdin()
+                    .read_line(&mut answer)
+                    .map_err(|err| CliError::Config(format!("cannot read answer: {err}")))?;
+                let answer = answer.trim().to_ascii_lowercase();
+                if answer != "y" && answer != "yes" {
+                    println!("aborted");
+                    return Ok(());
+                }
+            }
+            authed
+                .api
+                .delete_media(&authed.pat, &blog_id, &media_id)
+                .await?;
+            println!("Media {media_id} deleted.");
         }
     }
     Ok(())
