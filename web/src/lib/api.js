@@ -65,3 +65,36 @@ export async function request(path, { method = 'GET', body } = {}) {
 	}
 	return { ok: true, data, error: null, unauthorized: false };
 }
+
+/**
+ * @param {string} path
+ * @param {{ body: Blob | File | ArrayBuffer | Uint8Array }} options Raw binary
+ * (media upload). Session and CSRF semantics mirror `request`.
+ * @returns {Promise<Result>}
+ */
+export async function requestRaw(path, { method = 'POST', body } = {}) {
+	let response;
+	try {
+		response = await fetch(path, {
+			method: method.toUpperCase(),
+			headers: { [CSRF_HEADER]: readCsrfToken() },
+			credentials: 'same-origin',
+			body
+		});
+	} catch {
+		return { ok: false, data: null, error: 'network error — is the API running?', unauthorized: false };
+	}
+	let data = null;
+	try {
+		data = await response.json();
+	} catch {
+		// a failure shape never conceptually appears here.
+	}
+	if (response.status === 401) {
+		return { ok: false, data, error: data?.error ?? 'unauthorized', unauthorized: true };
+	}
+	if (!response.ok) {
+		return { ok: false, data, error: data?.error ?? `request failed with ${response.status}`, unauthorized: false };
+	}
+	return { ok: true, data, error: null, unauthorized: false };
+}

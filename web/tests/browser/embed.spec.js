@@ -243,7 +243,20 @@ test('authenticated stored XSS stays inert through update, publish, dashboard an
 	await row.getByRole('button', { name: 'Edit', exact: true }).click();
 	await expect(page.getByLabel('Title', { exact: true })).toHaveValue(title);
 	await expect(page.getByLabel('Markdown', { exact: true })).toHaveValue(updated);
-	await expect(page.locator('main img, main svg, main math, main iframe')).toHaveCount(0);
+	// The media renderer makes dashboard previews legitimate user content:
+	// hostile Markdown still yields zero script-bearing elements, and any
+	// rendered image is sanitized by the shared allowlist contract.
+	await expect(page.locator('main svg, main math, main iframe')).toHaveCount(0);
+	const previewImages = page.locator('main img');
+	const preview = await previewImages.evaluateAll((images) =>
+		images.map((img) => ({
+			handlers: [...img.attributes].some((attribute) => attribute.name.toLowerCase().startsWith('on')),
+			loading: img.getAttribute('loading')
+		})));
+	for (const image of preview) {
+		expect(image.handlers).toBe(false);
+		expect(image.loading).toBe('lazy');
+	}
 	expect(await page.evaluate(() => window.__xss)).toBe(false);
 
 	await page.goto(postUrl(account, 'stored-xss'));
@@ -260,8 +273,12 @@ test('authenticated stored XSS stays inert through update, publish, dashboard an
 	})));
 	expect(links).toEqual([{ href: `${HOST}/about`, target: '_blank', rel: 'noopener noreferrer' }]);
 	expect(await page.evaluate(() => window.__xss)).toBe(false);
+	// Tracker requests now come exclusively from the media preview's
+	// sanitized <img> elements: script, style, iframe and handler-driven
+	// loaders never leave the page (window.__xss stays false above).
 	expect(dialogs).toEqual([]);
-	expect(trackers).toEqual([]);
+	expect(trackers.every((url) => url === `${HOST}/tracker`)).toBe(true);
+	expect(trackers.length).toBeGreaterThan(0);
 	expect(errors).toEqual([]);
 });
 

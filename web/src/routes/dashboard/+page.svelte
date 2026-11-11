@@ -1,6 +1,8 @@
 <script>
-	import { isEmail, request } from '#lib/api.js';
+	import { isEmail, request, requestRaw } from '#lib/api.js';
 	import { isValidPostPath, originFromSiteAddress } from '#lib/integration.js';
+	import { buildMediaRenderer } from '../../embed/media-renderer.js';
+	import { removeMediaImages } from '#lib/media.js';
 	import Turnstile from '#lib/components/Turnstile.svelte';
 
 	// The Turnstile site key is baked in at build time (web/.env.example);
@@ -146,6 +148,25 @@
 	let editor = $state(null);
 	let editorError = $state('');
 	let busy = $state(false);
+
+	// Media ------------------------------------------------------------------
+	/** @type {{ id: string, mime: string, status: string, width: number|null, height: number|null, stored_bytes: number, public_url: string|null, variants: { label: string, public_url: string, width: number|null, height: number|null }[], delete_warned?: boolean }[]} */
+	let media = $state([]);
+	let mediaError = $state('');
+	let uploading = $state(false);
+	let uploadingName = $state('');
+	let deletingMediaId = $state(null);
+	let mediaNote = $state('');
+	/** @type {{ id: string, account_id: string, bucket: string, prefix: string|null, public_base_url: string, name: string|null, delete_warned?: boolean }[]} */
+	let connections = $state([]);
+	let storagePreference = $state({ storage: 'statesu', connection_id: null });
+	let storageError = $state('');
+	let storageNote = $state('');
+	/** @type {{ name: string, account_id: string, bucket: string, prefix: string, public_base_url: string, access_key_id: string, secret_key: string }} */
+	let connectionDraft = $state({
+		name: '', account_id: '', bucket: '', prefix: '',
+		public_base_url: '', access_key_id: '', secret_key: ''
+	});
 
 	const selectedBlog = $derived(blogs.find((b) => b.id === selectedBlogId) ?? null);
 
@@ -341,6 +362,9 @@
 		deleteBlogId = null;
 		blogDeleteError = '';
 		posts = [];
+		media = [];
+		mediaError = '';
+		mediaNote = '';
 		postsError = '';
 		editor = null;
 		editorError = '';
@@ -360,6 +384,299 @@
 			return;
 		}
 		posts = result.data.items;
+		await Promise.all([refreshMedia(), refreshStorage()]);
+	}
+
+	// Media helpers ---------------------------------------
+
+	async function refreshMedia() {
+		mediaError = '';
+		if (!selectedBlogId) {
+			media = [];
+			return;
+		}
+		const result = await request(`/blogs/${selectedBlogId}/media?page=1&size=50`);
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			mediaError = result.error;
+			return;
+		}
+		media = result.data.items;
+	}
+
+	function mediaByUrlMap() {
+		const map = new Map();
+		for (const entry of media) {
+			if (typeof entry.public_url !== 'string' || entry.public_url === '') continue;
+			const variants = entry.variants ?? [];
+			map.set(entry.public_url, {
+				source_url: entry.public_url,
+				source_width: entry.width,
+				source_height: entry.height,
+				zoom_url: variants.length
+					? variants[variants.length - 1].public_url
+					: entry.public_url,
+				variants: variants.map((variant) => ({
+					label: variant.label,
+					url: variant.public_url,
+					width: variant.width,
+					height: variant.height
+				}))
+			});
+		}
+		return map;
+	}
+
+	// Derived, not written-in-effect: every recompute produces plain data,
+	// nothing recurses, and the preview reacts to editor/media together.
+	const mediaByUrl = $derived(mediaByUrlMap());
+	const previewRenderer = $derived(buildMediaRenderer(window, mediaByUrl));
+	const previewHtml = $derived(
+		editor && previewRenderer
+			? previewRenderer(/** @type {{ content_markdown: string }} */ (editor).content_markdown)
+			: ''
+	);
+
+	/**
+	 * @param {File} file
+	 * @param {{ blogId: string, editor: unknown, caret: number|null }} target
+	 */
+	async function uploadMediaFile(file, target) {
+		uploading = true;
+		uploadingName = file.name;
+		try {
+			const result = await requestRaw(`/blogs/${target.blogId}/media`, { body: file });
+			if (!result.ok) {
+				if (signedOut(result)) return;
+				mediaError = result.error;
+				return;
+			}
+			mediaError = '';
+			// Everything the result publishes belongs to the blog and the
+			// editor it was requested from: a meanwhile-switched blog's
+			// media list never sees this entry, and a closed or switched
+			// editor never receives text.
+			if (selectedBlogId !== target.blogId || editor !== target.editor) return;
+			media = [result.data ?? media[0], ...media].filter(Boolean);
+			insertClipboardMarkdownAt(target.editor, target.caret, markdownForMedia(result.data ?? {}, file.name));
+		} finally {
+			uploading = false;
+			uploadingName = '';
+		}
+	}
+
+	/**
+	 * @param {FileList | Array<File>|null|undefined} [fileList]
+	 */
+	async function uploadMediaFiles(fileList) {
+		if (uploading || deletingMediaId || !selectedBlogId || !editor) return;
+		mediaError = '';
+		mediaNote = '';
+		const area = /** @type {HTMLTextAreaElement | null} */ (document.getElementById('post-content'));
+		const target = {
+			blogId: /** @type {string} */ (selectedBlogId),
+			editor,
+			caret: area ? area.selectionStart : null
+		};
+		for (const file of [...(fileList ?? [])]) {
+			if (!file.type.startsWith('image/')) {
+				mediaError = `'${file.name}' is not recognized as an image by the browser.`;
+				continue;
+			}
+			await uploadMediaFile(file, target);
+			// Preserve file order instead of inserting every file at the original caret.
+			target.caret = area?.selectionStart ?? null;
+		}
+	}
+
+	/** @param {Record<string, unknown>} media @param {string} fileName */
+	function markdownForMedia(media, fileName) {
+		const url = typeof media.public_url === 'string' ? media.public_url : '';
+		if (!url) return '';
+		const alt = (fileName.split('.')[0] ?? 'image').trim().replace(/[\[\]]/g, '') || 'image';
+		return `![${alt}](${url})`;
+	}
+
+	/** @param {string} markdown Inserts one Markdown line at the live caret. */
+	function insertClipboardMarkdown(markdown) {
+		if (!editor || !markdown) return;
+		const area = /** @type {HTMLTextAreaElement | null} */ (document.getElementById('post-content'));
+		insertClipboardMarkdownAt(editor, area?.selectionStart ?? null, markdown);
+	}
+
+	/**
+	 * @param {unknown} targetEditor Inserts one Markdown line into exactly
+	 *   that editor object at the given text position. Insertion is always
+	 *   single-point: end and start split at the same index, so a caret
+	 *   that moved since the snapshot can never delete ranges.
+	 * @param {number|null} caret
+	 * @param {string} markdown
+	 */
+	function insertClipboardMarkdownAt(targetEditor, caret, markdown) {
+		if (targetEditor !== editor || !markdown || !editor) return;
+		const area = /** @type {HTMLTextAreaElement | null} */ (document.getElementById('post-content'));
+		const start = typeof caret === 'number'
+			? Math.min(caret, editor.content_markdown.length)
+			: (area?.selectionStart ?? editor.content_markdown.length);
+		const before = editor.content_markdown.slice(0, start);
+		const after = editor.content_markdown.slice(start);
+		const glue = before && !before.endsWith('\n') ? '\n\n' : '';
+		editor.content_markdown = `${before}${glue}${markdown}\n${after}`;
+		let placed = before.length + glue.length + markdown.length;
+		queueMicrotask(() => {
+			if (area) {
+				area.selectionStart = area.selectionEnd = placed + 1;
+				area.focus();
+			}
+		});
+	}
+
+	/** @param {DragEvent} event */
+	function onEditorDrop(event) {
+		event.preventDefault();
+		uploadMediaFiles(event.dataTransfer?.files ?? []);
+	}
+
+	/** @param {ClipboardEvent} event */
+	function onEditorPaste(event) {
+		const files = [...(event.clipboardData?.items ?? [])]
+			.filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+			.map((item) => item.getAsFile())
+			.filter((file) => file !== null);
+		if (files.length === 0) return;
+		event.preventDefault();
+		uploadMediaFiles(files);
+	}
+
+	/** @param {{ id: string, public_url: string|null, variants?: { public_url: string }[], delete_warned?: boolean }} mediaEntry */
+	async function deleteMediaEntry(mediaEntry) {
+		if (!selectedBlogId || deletingMediaId || uploading) return;
+		if (!mediaEntry.delete_warned) {
+			for (const entry of media) entry.delete_warned = false;
+			mediaEntry.delete_warned = true;
+			mediaError = '';
+			mediaNote = '';
+			return;
+		}
+		const blogId = selectedBlogId;
+		deletingMediaId = mediaEntry.id;
+		try {
+			const result = await request(`/blogs/${blogId}/media/${mediaEntry.id}`, { method: 'DELETE' });
+			if (signedOut(result) || selectedBlogId !== blogId) return;
+			if (!result.ok) {
+				mediaError = result.error;
+				return;
+			}
+			const urls = [mediaEntry.public_url, ...(mediaEntry.variants ?? []).map((variant) => variant.public_url)];
+			if (editor) editor.content_markdown = removeMediaImages(editor.content_markdown, urls);
+			mediaError = '';
+			media = media.filter((entry) => entry.id !== mediaEntry.id);
+			mediaNote = 'Image deleted. References in this editor were removed; save the post to keep those changes. Other saved posts are not updated.';
+		} finally {
+			deletingMediaId = null;
+		}
+	}
+
+	// Storage connections -------------------------------------
+
+	function emptyConnectionDraft() {
+		return {
+			name: '', account_id: '', bucket: '', prefix: '',
+			public_base_url: '', access_key_id: '', secret_key: ''
+		};
+	}
+
+
+	async function refreshStorage() {
+		storageError = '';
+		if (!selectedBlogId) {
+			connections = [];
+			storagePreference = { storage: 'statesu', connection_id: null };
+			return;
+		}
+		const [listed, preference] = await Promise.all([
+			request(`/blogs/${selectedBlogId}/storage-connections`),
+			request(`/blogs/${selectedBlogId}/media-storage`)
+		]);
+		if (!listed.ok || !preference.ok) {
+			if (signedOut(listed) || signedOut(preference)) return;
+			storageError = listed.error ?? preference.error ?? '';
+			return;
+		}
+		connections = listed.data;
+		storagePreference = preference.data;
+	}
+
+	/** @param {SubmitEvent} event */
+	async function createConnection(event) {
+		event.preventDefault();
+		storageError = '';
+		storageNote = '';
+		const body = {
+			name: connectionDraft.name.trim() || null,
+			account_id: connectionDraft.account_id.trim(),
+			bucket: connectionDraft.bucket.trim(),
+			prefix: connectionDraft.prefix.trim() || null,
+			public_base_url: connectionDraft.public_base_url.trim().replace(/\/+$/, ''),
+			access_key_id: connectionDraft.access_key_id.trim(),
+			secret_key: connectionDraft.secret_key
+		};
+		const result = await request(`/blogs/${selectedBlogId}/storage-connections`, { method: 'POST', body });
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			storageError = result.error;
+			return;
+		}
+		connectionDraft = emptyConnectionDraft();
+		storageNote = 'Bucket verified with a probe object and connection created.';
+		await refreshStorage();
+	}
+
+	/** @param {{ id: string, delete_warned?: boolean }} connection */
+	async function deleteConnection(connection) {
+		if (!selectedBlogId) return;
+		if (!connection.delete_warned) {
+			connection.delete_warned = true;
+			storageError = `Delete again to confirm. Media uploaded to this bucket keeps living there.`;
+			return;
+		}
+		const result = await request(`/blogs/${selectedBlogId}/storage-connections/${connection.id}`, { method: 'DELETE' });
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			storageError = result.error;
+			return;
+		}
+		storageError = '';
+		storageNote = '';
+		await refreshStorage();
+	}
+
+
+	async function useServerStorage() {
+		const result = await request(`/blogs/${selectedBlogId}/media-storage`, {
+			method: 'PUT',
+			body: { connection_id: null }
+		});
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			storageError = result.error;
+			return;
+		}
+		await refreshStorage();
+	}
+
+	/** @param {{ id: string }} connection */
+	async function useCustomStorage(connection) {
+		const result = await request(`/blogs/${selectedBlogId}/media-storage`, {
+			method: 'PUT',
+			body: { connection_id: connection.id }
+		});
+		if (!result.ok) {
+			if (signedOut(result)) return;
+			storageError = result.error;
+			return;
+		}
+		await refreshStorage();
 	}
 
 	/** @param {SubmitEvent} event */
@@ -728,11 +1045,66 @@
 											<input id="post-title" bind:value={editor.title} required /></span>
 									</div>
 									<label for="post-content">Markdown</label>
-									<textarea id="post-content" rows="18" bind:value={editor.content_markdown} placeholder={'# Heading\n\nBody text…'}></textarea>
+									<div class="media-toolbar">
+										<button type="button" class="link media-button" disabled={uploading || !!deletingMediaId} onclick={() => document.getElementById('media-pick')?.click()}>Add images…</button>
+										<input
+											id="media-pick"
+											type="file"
+											accept="image/jpeg,image/png,image/webp"
+											multiple
+											disabled={uploading || !!deletingMediaId}
+											hidden
+											onchange={(event) => {
+												{ uploadMediaFiles(/** @type {HTMLInputElement} */ (event.currentTarget).files); }
+												event.currentTarget.value = '';
+											}}
+										/>
+										<span class="note">…or drop / paste an image onto the editor. The file name becomes the alt text.</span>
+										{#if uploading}<p class="note" role="status">Uploading {uploadingName}…</p>{/if}
+										{#if mediaError}<p class="error" role="alert">{mediaError}</p>{/if}
+										{#if mediaNote}<p class="note" role="status">{mediaNote}</p>{/if}
+									</div>
+									<textarea
+										id="post-content"
+										rows="18"
+										bind:value={editor.content_markdown}
+										ondrop={onEditorDrop}
+										ondragover={(event) => event.preventDefault()}
+										onpaste={onEditorPaste}
+										placeholder={'# Heading\n\nBody text…'}
+									></textarea>
+									{#if previewHtml}
+										<div class="preview mt">
+											<h4>Preview</h4>
+											<div class="statesu-body">{@html previewHtml}</div>
+										</div>
+									{/if}
 									<div class="row">
-										<button type="submit" disabled={busy}>{editor.id ? 'Save changes' : 'Create draft'}</button>
+										<button type="submit" disabled={busy || uploading || !!deletingMediaId}>{busy ? 'Saving…' : editor.id ? 'Save changes' : 'Create draft'}</button>
 										<button type="button" class="link" onclick={() => (editor = null)}>Cancel</button>
 									</div>
+											<div class="media-list">
+												{#if media.length === 0}
+													<span class="note">No media in this blog yet.</span>
+												{:else}
+													<span class="note">Media — {media.length}</span>
+													<ul>
+														{#each media as mediaEntry (mediaEntry.id)}
+															<li>
+																{#if mediaEntry.public_url}<img class="media-thumbnail" src={mediaEntry.public_url} alt="" loading="lazy" />{/if}
+																<code>{mediaEntry.mime}</code>
+																{mediaEntry.width ?? '?'}×{mediaEntry.height ?? '?'} · {Math.round(mediaEntry.stored_bytes / 1024)} KiB
+																<button type="button" class="link" disabled={uploading || !!deletingMediaId || !mediaEntry.public_url} onclick={() => insertClipboardMarkdown(markdownForMedia(mediaEntry, mediaEntry.id))}>Insert</button>
+																<button type="button" class="link" disabled={uploading || !!deletingMediaId} onclick={() => deleteMediaEntry(mediaEntry)}>{deletingMediaId === mediaEntry.id ? 'Deleting…' : mediaEntry.delete_warned ? 'Confirm delete' : 'Delete'}</button>
+																{#if mediaEntry.delete_warned}
+																	<button type="button" class="link" disabled={!!deletingMediaId} onclick={() => (mediaEntry.delete_warned = false)}>Cancel deletion</button>
+																	<p class="media-warning">Permanently delete this image? References in this editor will be removed. Other saved posts may show a broken image.</p>
+																{/if}
+															</li>
+														{/each}
+													</ul>
+												{/if}
+											</div>
 									{#if editorError}<p class="error" role="alert">{editorError}</p>{/if}
 								</form>
 							</div>
@@ -759,6 +1131,7 @@
 							<textarea id="blog-origins" rows="4" bind:value={originsDraft} placeholder={'https://example.com\nhttp://localhost:5173'}></textarea>
 							<div><button type="submit">Save settings</button></div>
 							{#if settingsSaved}<p class="ok">Settings saved.</p>{/if}
+
 							{#if settingsError}<p class="error" role="alert">{settingsError}</p>{/if}
 							<div>
 								<button type="button" disabled={!integrationOriginValid} onclick={allowIntegrationOrigin}>
@@ -766,6 +1139,57 @@
 								</button>
 							</div>
 						</form>
+						<h3 class="mt">Media storage</h3>
+							<p>Images upload into one bucket per blog: Statesu's own, or your own Cloudflare R2 bucket. Switching never moves already uploaded media.</p>
+							{#if storageError}<p class="error" role="alert">{storageError}</p>{/if}
+							{#if storageNote}<p class="ok" role="status">{storageNote}</p>{/if}
+							<p>
+								In use: <code>{storagePreference.connection_id ? 'your R2 bucket' : "Statesu's bucket"}</code>
+								<button type="button" class="link" onclick={useServerStorage} disabled={storagePreference && !storagePreference.connection_id}>Use Statesu's bucket</button>
+							</p>
+							{#if connections.length > 0}
+								<div class="table-scroll">
+									<table>
+										<thead><tr><th scope="col">Bucket</th><th scope="col">Prefix</th><th scope="col">Public URL</th><th scope="col">Actions</th></tr></thead>
+										<tbody>
+											{#each connections as connection (connection.id)}
+												<tr>
+													<td>{connection.bucket}</td>
+													<td>{connection.prefix ?? ''}</td>
+													<td><code>{connection.public_base_url}</code></td>
+													<td class="actions">
+														<button type="button" class="link" onclick={() => useCustomStorage(connection)} disabled={storagePreference.connection_id === connection.id}>Use</button>
+														<button type="button" class="link" onclick={() => deleteConnection(connection)}>{connection.delete_warned ? 'Confirm delete' : 'Delete'}</button>
+													</td>
+												</tr>
+											{/each}
+										</tbody>
+									</table>
+								</div>
+							{/if}
+							<details>
+								<summary>Connect your own R2 bucket</summary>
+								<div class="details-body">
+									<p class="note">In Cloudflare, create an <strong>R2 API token scoped to one single bucket</strong>, not an account-level key. The secret is stored encrypted and never shown back. Your bucket needs a public domain — that address goes below and Markdown keeps working from it.</p>
+									<form class="stack" onsubmit={(event) => { event.preventDefault(); void createConnection(event); }}>
+										<label for="conn-name">Name (optional)</label>
+										<input id="conn-name" bind:value={connectionDraft.name} placeholder="Blog photos" />
+										<label for="conn-account">Cloudflare account ID (32 hex characters)</label>
+										<input id="conn-account" bind:value={connectionDraft.account_id} size="32" required />
+										<label for="conn-bucket">Bucket name</label>
+										<input id="conn-bucket" bind:value={connectionDraft.bucket} required />
+										<label for="conn-prefix">Object key prefix (optional, e.g. statesu)</label>
+										<input id="conn-prefix" bind:value={connectionDraft.prefix} />
+										<label for="conn-public">Public base URL (https://media.example.com)</label>
+										<input id="conn-public" bind:value={connectionDraft.public_base_url} required />
+										<label for="conn-key">Access key ID</label>
+										<input id="conn-key" bind:value={connectionDraft.access_key_id} required />
+										<label for="conn-secret">R2 secret access key</label>
+										<input id="conn-secret" type="password" bind:value={connectionDraft.secret_key} required />
+										<button type="submit">Verify and connect</button>
+									</form>
+								</div>
+							</details>
 					{/if}
 				</div>
 				<div class="view">
@@ -869,6 +1293,13 @@
 </main>
 
 <style>
+	/* Media preview parity with the embed's own body rules: hosted files
+	   never escape their container at any viewport width. */
+	.preview :global(.statesu-body img) {
+		max-width: 100%;
+		height: auto;
+	}
+
 	/* Keep documentation layout rules out of the dashboard workspace. */
 	.dashboard { width: min(100% - 96px, 1440px); margin-inline: auto; color: #000; background: #fff; }
 	.dashboard p, .dashboard ul, .dashboard code { color: inherit; }
@@ -949,7 +1380,13 @@
 	button { font: inherit; font-size: 13px; font-weight: 600; line-height: 1.6; padding: 11px 18px; border: 0; border-radius: 0; background: #000; color: #fff; cursor: pointer; }
 	button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 4px; }
 	button.link { background: none; border: 0; color: inherit; padding: 0; text-decoration: underline; text-underline-offset: 4px; }
-	button:disabled { cursor: not-allowed; text-decoration: line-through; }
+	button:disabled { cursor: not-allowed; opacity: .5; }
+	.media-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+	.media-toolbar p { flex-basis: 100%; }
+	.media-list ul { list-style: none; padding: 0; display: grid; gap: 12px; }
+	.media-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px; border: 1px solid #ddd; }
+	.media-thumbnail { width: 64px; height: 64px; object-fit: contain; background: #f5f5f5; }
+	.media-warning { flex-basis: 100%; }
 	.view .error, .narrow .error { color: #fff; background: #000; padding: 10px 12px; }
 	.ok { font-weight: 600; }
 	.secret { display: inline-block; font-family: var(--mono); font-size: 13px; padding: 6px 10px; word-break: break-all; }
