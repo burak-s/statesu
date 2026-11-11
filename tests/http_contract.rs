@@ -196,6 +196,470 @@ async fn auth_responses_are_no_store_but_public_reads_are_not() {
     assert_eq!(public.header("x-content-type-options"), Some("nosniff"));
 }
 
+#[tokio::test]
+async fn registration_limits_share_ip_budget_across_emails_and_ignore_spoofed_headers() {
+    let app = TestApp::new().await;
+    let peer: IpAddr = "192.0.2.50".parse().unwrap();
+    for index in 0..10 {
+        if index > 0 && index % 3 == 0 {
+            // Another email and a forged forwarded address cannot buy
+            // a fourth registration in the same rolling hour.
+            let blocked = with_header(
+                json_request(
+                    Method::POST,
+                    "/auth/register",
+                    json!({
+                        "email": format!("blocked-{index}@example.com"), "password": PASSWORD
+                    }),
+                ),
+                "x-forwarded-for",
+                "8.8.8.8",
+            );
+            app.send_as(blocked, peer)
+                .await
+                .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+            app.clock.advance(3600);
+        }
+        let response = app
+            .send_as(
+                json_request(
+                    Method::POST,
+                    "/auth/register",
+                    json!({
+                        "email": format!("registration-{index}@example.com"), "password": PASSWORD
+                    }),
+                ),
+                peer,
+            )
+            .await;
+        assert_eq!(response.status, StatusCode::ACCEPTED, "{}", response.text());
+    }
+    let daily = app
+        .send_as(
+            json_request(
+                Method::POST,
+                "/auth/register",
+                json!({
+                    "email": "daily-blocked@example.com", "password": PASSWORD
+                }),
+            ),
+            peer,
+        )
+        .await;
+    daily.assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+    assert_eq!(daily.header("retry-after"), Some("75600"));
+    assert_eq!(app.sent_mail.lock().unwrap().len(), 10);
+
+    let other = app
+        .send_as(
+            json_request(
+                Method::POST,
+                "/auth/register",
+                json!({
+                    "email": "other-ip@example.com", "password": PASSWORD
+                }),
+            ),
+            "192.0.2.51".parse().unwrap(),
+        )
+        .await;
+    assert_eq!(other.status, StatusCode::ACCEPTED);
+    app.clock.advance(86_400);
+    let restored = app
+        .send_as(
+            json_request(
+                Method::POST,
+                "/auth/register",
+                json!({
+                    "email": "next-day@example.com", "password": PASSWORD
+                }),
+            ),
+            peer,
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::ACCEPTED);
+}
+
+fn media_request(blog: &str, token: &str, body: Vec<u8>) -> Request<Body> {
+    Request::builder()
+        .method(Method::POST)
+        .uri(format!("/blogs/{blog}/media"))
+        .header("authorization", common::bearer(token))
+        .body(Body::from(body))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn upload_ip_budget_is_shared_by_accounts_and_includes_a_daily_limit() {
+    let app = TestApp::new().await;
+    let peer: IpAddr = "192.0.2.60".parse().unwrap();
+    let mut accounts = Vec::new();
+    for index in 0..3 {
+        let token = register_token(&app, &format!("uploader-{index}@example.com"), PASSWORD).await;
+        let blog = create_blog(&app, &token, "Uploads", &format!("uploads-{index}"))
+            .await
+            .json()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        accounts.push((token, blog));
+    }
+    for index in 0..200 {
+        if index > 0 && index % 20 == 0 {
+            let (token, blog) = &accounts[2];
+            let blocked = app
+                .send_as(media_request(blog, token, vec![0; 65 * 1024]), peer)
+                .await;
+            blocked.assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+            app.clock.advance(60);
+        }
+        let account = if index < 20 { index / 10 } else { index % 3 };
+        let (token, blog) = &accounts[account];
+        let response = app
+            .send_as(media_request(blog, token, b"not an image".to_vec()), peer)
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "{}",
+            response.text()
+        );
+    }
+    let (token, blog) = &accounts[2];
+    let daily = app
+        .send_as(media_request(blog, token, Vec::new()), peer)
+        .await;
+    daily.assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+    assert!(daily.header("retry-after").unwrap().parse::<u64>().unwrap() > 3600);
+    let other_ip = app
+        .send_as(
+            media_request(blog, token, b"not an image".to_vec()),
+            "192.0.2.61".parse().unwrap(),
+        )
+        .await;
+    assert_eq!(other_ip.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
+async fn upload_user_budget_survives_ip_pat_and_blog_changes_and_counts_failures() {
+    let app = TestApp::new().await;
+    let token = register_token(&app, EMAIL, PASSWORD).await;
+    let (cookie, csrf) = common::login_session(&app, EMAIL, PASSWORD).await;
+    let other_token = common::create_pat(&app, &cookie, &csrf, true).await;
+    let blog = create_blog(&app, &token, "First", "upload-first")
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let other_blog = create_blog(&app, &token, "Second", "upload-second")
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    for index in 0..100 {
+        if index > 0 && index % 10 == 0 {
+            let blocked = app
+                .send_as(
+                    media_request(&other_blog, &other_token, vec![0; 65 * 1024]),
+                    "192.0.2.99".parse().unwrap(),
+                )
+                .await;
+            blocked.assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+            app.clock.advance(60);
+        }
+        let (blog, token) = if index % 2 == 0 {
+            (&blog, &token)
+        } else {
+            (&other_blog, &other_token)
+        };
+        let peer = format!("192.0.2.{}", 70 + index % 4).parse().unwrap();
+        let response = app
+            .send_as(media_request(blog, token, b"not an image".to_vec()), peer)
+            .await;
+        assert_eq!(
+            response.status,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "{}",
+            response.text()
+        );
+    }
+    let daily = app
+        .send_as(
+            media_request(&other_blog, &other_token, Vec::new()),
+            "192.0.2.100".parse().unwrap(),
+        )
+        .await;
+    daily.assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+    assert!(daily.header("retry-after").unwrap().parse::<u64>().unwrap() > 3600);
+    app.clock.advance(86_400);
+    let restored = app
+        .send_as(
+            media_request(&blog, &token, b"not an image".to_vec()),
+            "192.0.2.101".parse().unwrap(),
+        )
+        .await;
+    assert_eq!(restored.status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
+async fn deleting_media_does_not_refund_upload_attempts() {
+    let (app, _storage) = TestApp::with_server_storage().await;
+    let token = register_token(&app, EMAIL, PASSWORD).await;
+    let blog = create_blog(&app, &token, "Churn", "upload-churn")
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let mut image = Vec::new();
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([10u8, 20, 30, 255]))
+        .write_to(
+            &mut std::io::Cursor::new(&mut image),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    for _ in 0..10 {
+        let uploaded = app.send(media_request(&blog, &token, image.clone())).await;
+        assert_eq!(uploaded.status, StatusCode::CREATED, "{}", uploaded.text());
+        let id = uploaded.json()["id"].as_str().unwrap().to_owned();
+        let deleted = common::authed(
+            &app,
+            Method::DELETE,
+            &format!("/blogs/{blog}/media/{id}"),
+            &token,
+        )
+        .await;
+        assert_eq!(deleted.status, StatusCode::NO_CONTENT);
+    }
+    app.send(media_request(&blog, &token, image))
+        .await
+        .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+    let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM media")
+        .fetch_one(&app.app.pool)
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "storage is empty but the upload budget is spent");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_real_uploads_share_user_budget_and_rejected_bodies_are_not_read() {
+    use http_body_util::BodyExt;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let (app, _storage) = TestApp::with_configured_storage(|config| {
+        config.r2_default = Some(TestApp::test_server_storage());
+        // Keep the general concurrency gate out of this test: the user
+        // limiter itself must stop the burst, not an unrelated 503.
+        config.max_concurrency = 512;
+    })
+    .await;
+    let token = register_token(&app, EMAIL, PASSWORD).await;
+    let (cookie, csrf) = common::login_session(&app, EMAIL, PASSWORD).await;
+    let other_token = common::create_pat(&app, &cookie, &csrf, true).await;
+    let mut blogs = Vec::new();
+    for slug in ["parallel-one", "parallel-two"] {
+        blogs.push(
+            create_blog(&app, &token, "Parallel", slug).await.json()["id"]
+                .as_str()
+                .unwrap()
+                .to_owned(),
+        );
+    }
+    let mut image = Vec::new();
+    image::RgbaImage::from_pixel(16, 16, image::Rgba([10u8, 20, 30, 255]))
+        .write_to(
+            &mut std::io::Cursor::new(&mut image),
+            image::ImageFormat::Png,
+        )
+        .unwrap();
+    let app = Arc::new(app);
+    let barrier = Arc::new(tokio::sync::Barrier::new(257));
+    let mut workers = tokio::task::JoinSet::new();
+    for index in 0..256 {
+        let app = app.clone();
+        let barrier = barrier.clone();
+        let token = if index % 2 == 0 {
+            token.clone()
+        } else {
+            other_token.clone()
+        };
+        let blog = blogs[index % 2].clone();
+        let image = image.clone();
+        workers.spawn(async move {
+            let peer = format!("192.0.2.{}", index % 128 + 1).parse().unwrap();
+            barrier.wait().await;
+            app.send_as(media_request(&blog, &token, image), peer).await
+        });
+    }
+    barrier.wait().await;
+    let mut created = 0;
+    let mut limited = 0;
+    while let Some(result) = workers.join_next().await {
+        let response = result.unwrap();
+        match response.status {
+            StatusCode::CREATED => created += 1,
+            StatusCode::TOO_MANY_REQUESTS => {
+                assert_eq!(response.header("retry-after"), Some("60"));
+                limited += 1;
+            }
+            status => panic!("unexpected burst response {status}: {}", response.text()),
+        }
+    }
+    assert_eq!((created, limited), (10, 246));
+    let mut visible = 0;
+    for blog in &blogs {
+        let listed =
+            common::authed(&app, Method::GET, &format!("/blogs/{blog}/media"), &token).await;
+        assert_eq!(listed.status, StatusCode::OK);
+        visible += listed.json()["total"].as_u64().unwrap();
+    }
+    assert_eq!(visible, 10, "only the ten admitted requests created media");
+
+    let reads = Arc::new(AtomicUsize::new(0));
+    let body_reads = reads.clone();
+    let body = Body::new(
+        http_body_util::Full::new(axum::body::Bytes::from_static(b"never read")).map_frame(
+            move |frame| {
+                body_reads.fetch_add(1, Ordering::SeqCst);
+                frame
+            },
+        ),
+    );
+    let request = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/blogs/{}/media", blogs[0]))
+        .header("authorization", common::bearer(&other_token))
+        .body(body)
+        .unwrap();
+    let blocked = app.send_as(request, "203.0.113.5".parse().unwrap()).await;
+    blocked.assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        0,
+        "rejection must precede body buffering"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_signups_with_rotating_ipv6_and_spoofed_headers_share_one_budget() {
+    use std::sync::Arc;
+
+    let app = Arc::new(TestApp::build(|config| config.max_concurrency = 256).await);
+    let barrier = Arc::new(tokio::sync::Barrier::new(129));
+    let mut workers = tokio::task::JoinSet::new();
+    for index in 0..128 {
+        let app = app.clone();
+        let barrier = barrier.clone();
+        workers.spawn(async move {
+            let request = with_header(
+                json_request(
+                    Method::POST,
+                    "/auth/register",
+                    json!({
+                        "email": format!("signup-burst-{index}@example.com"), "password": PASSWORD
+                    }),
+                ),
+                "x-forwarded-for",
+                &format!("192.0.2.{}", index + 1),
+            );
+            let peer = format!("2001:db8:1:2::{:x}", index + 1).parse().unwrap();
+            barrier.wait().await;
+            app.send_as(request, peer).await
+        });
+    }
+    barrier.wait().await;
+    let mut accepted = 0;
+    let mut rejected = 0;
+    while let Some(result) = workers.join_next().await {
+        let response = result.unwrap();
+        match response.status {
+            StatusCode::ACCEPTED => accepted += 1,
+            StatusCode::TOO_MANY_REQUESTS => {
+                assert_eq!(response.header("retry-after"), Some("3600"));
+                rejected += 1;
+            }
+            status => panic!("unexpected signup response {status}: {}", response.text()),
+        }
+    }
+    assert_eq!((accepted, rejected), (3, 125));
+    let other_network = app
+        .send_as(
+            json_request(
+                Method::POST,
+                "/auth/register",
+                json!({
+                    "email": "signup-other-network@example.com", "password": PASSWORD
+                }),
+            ),
+            "2001:db8:1:3::1".parse().unwrap(),
+        )
+        .await;
+    assert_eq!(
+        other_network.status,
+        StatusCode::ACCEPTED,
+        "a different /64 is independent"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_accounts_cannot_overshoot_the_shared_upload_ip_budget() {
+    use std::sync::Arc;
+
+    let app = TestApp::new().await;
+    let mut accounts = Vec::new();
+    for index in 0..3 {
+        let token = register_token(
+            &app,
+            &format!("parallel-account-{index}@example.com"),
+            PASSWORD,
+        )
+        .await;
+        let blog = create_blog(&app, &token, "Shared IP", &format!("parallel-ip-{index}"))
+            .await
+            .json()["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        accounts.push((token, blog));
+    }
+    let app = Arc::new(app);
+    let barrier = Arc::new(tokio::sync::Barrier::new(31));
+    let mut workers = tokio::task::JoinSet::new();
+    for index in 0..30 {
+        let app = app.clone();
+        let barrier = barrier.clone();
+        let (token, blog) = accounts[index % 3].clone();
+        workers.spawn(async move {
+            barrier.wait().await;
+            app.send_as(
+                media_request(&blog, &token, b"not an image".to_vec()),
+                "192.0.2.220".parse().unwrap(),
+            )
+            .await
+        });
+    }
+    barrier.wait().await;
+    let mut admitted = 0;
+    let mut limited = 0;
+    while let Some(result) = workers.join_next().await {
+        let response = result.unwrap();
+        match response.status {
+            StatusCode::UNSUPPORTED_MEDIA_TYPE => admitted += 1,
+            StatusCode::TOO_MANY_REQUESTS => {
+                assert_eq!(response.header("retry-after"), Some("60"));
+                limited += 1;
+            }
+            status => panic!(
+                "unexpected shared-IP response {status}: {}",
+                response.text()
+            ),
+        }
+    }
+    assert_eq!((admitted, limited), (20, 10));
+}
+
 async fn login_response(app: &TestApp) -> common::TestResponse {
     app.send(json_request(
         Method::POST,

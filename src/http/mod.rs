@@ -51,6 +51,11 @@ pub struct Limiters {
     pub general: Arc<RateLimiter>,
     /// Register/login attempts only; much tighter.
     pub auth: Arc<RateLimiter>,
+    /// Account creation cannot reset the shared IP's upload budget.
+    pub registrations: Arc<RateLimiter>,
+    pub media_ip: Arc<RateLimiter>,
+    /// Shared by every session, PAT and blog belonging to the same user.
+    pub media_user: Arc<RateLimiter<uuid::Uuid>>,
 }
 
 /// Request timeouts: reads get 10 seconds, writes 5 seconds, measured around
@@ -178,7 +183,7 @@ pub async fn request_guard(
         class_for_method(&method, &path)
     };
     let origin = request.headers().get(header::ORIGIN).cloned();
-    let client = request_client_ip(&state, &request);
+    let client = rate_limit::ip_key(request_client_ip(&state, &request));
     let has_authorization = request.headers().contains_key(header::AUTHORIZATION);
 
     // Delivery CORS is scoped to the blog in the path: only origins the blog
@@ -217,7 +222,16 @@ pub async fn request_guard(
         RouteClass::SensitiveAuth => &state.limiters.auth,
         _ => &state.limiters.general,
     };
-    let mut response = match limiter.take_slot(client) {
+    let allowed = limiter.take_slot(client).and_then(|()| {
+        if method == Method::POST && path == "/auth/register" {
+            state.limiters.registrations.take_slot(client)
+        } else if is_media_upload(&method, &path) {
+            state.limiters.media_ip.take_slot(client)
+        } else {
+            Ok(())
+        }
+    });
+    let mut response = match allowed {
         Ok(()) => next.run(request).await,
         Err(retry_after_secs) => Error::RateLimited { retry_after_secs }.into_response(),
     };

@@ -181,6 +181,18 @@ pub async fn build_app_with_storage(
             config.auth_rate_limit_rpm,
             clock.clone(),
         )),
+        registrations: Arc::new(RateLimiter::with_windows(
+            &[(3, 3600), (10, 86_400)],
+            clock.clone(),
+        )),
+        media_ip: Arc::new(RateLimiter::with_windows(
+            &[(20, 60), (200, 86_400)],
+            clock.clone(),
+        )),
+        media_user: Arc::new(RateLimiter::with_windows(
+            &[(10, 60), (100, 86_400)],
+            clock.clone(),
+        )),
     };
 
     let app_state = AppState {

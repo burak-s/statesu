@@ -40,9 +40,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Arc::new(mailer),
     )
     .await?;
-    let router = app
-        .router
-        .clone()
+    // Browser cases share one server/IP but create independent accounts.
+    // Exercise signup budgets in the isolated HTTP tests instead.
+    let mut state = app.state.clone();
+    state.limiters.registrations = Arc::new(statesu::http::rate_limit::RateLimiter::per_minute(
+        10_000,
+        Arc::new(SystemClock),
+    ));
+    let router = statesu::http::build_router(state)
         .route("/__test/ready", get(|| async { "ready" }))
         .route(
             "/__test/mail",

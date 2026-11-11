@@ -964,9 +964,14 @@ async fn turnstile_guards_register_and_login_when_injected() {
             .assert_error(StatusCode::FORBIDDEN, "turnstile verification failed");
     }
 
-    // The accepted token unlocks both routes; login still needs verification.
+    // Failed challenges still spend the signup budget. A valid challenge
+    // cannot bypass it; once the rolling hour expires it unlocks signup.
     let good =
         json!({ "email": EMAIL, "password": PASSWORD, "turnstile": common::TestTurnstile::TOKEN });
+    app.send(json_request(Method::POST, "/auth/register", good.clone()))
+        .await
+        .assert_error(StatusCode::TOO_MANY_REQUESTS, "rate limit exceeded");
+    app.clock.advance(3600);
     let registered = app
         .send(json_request(Method::POST, "/auth/register", good.clone()))
         .await;
