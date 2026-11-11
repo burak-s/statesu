@@ -2,7 +2,9 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::future::Future;
 use std::net::{IpAddr, SocketAddr};
+use std::pin::Pin;
 use std::sync::Arc;
 
 use axum::Router;
@@ -116,6 +118,199 @@ impl TurnstileVerifier for TestTurnstile {
     }
 }
 
+/// Recorded storage events, in exact order: `put:<key>` and `delete:<key>`
+/// entries let assertions check what the service did to the bucket and
+/// when it did it.
+pub type StorageEvents = Arc<std::sync::Mutex<Vec<String>>>;
+
+/// Recording storage factory: no network, one shared in-memory bucket.
+#[derive(Clone, Default)]
+pub struct TestStorage {
+    /// `"account:bucket:access_key"` per verification call.
+    pub verified: Arc<std::sync::Mutex<Vec<String>>>,
+    pub fail_verify: Arc<std::sync::atomic::AtomicBool>,
+    /// When set, the next `put` calls on stores fail, in order: the n-th
+    /// write rejects, every later one too. Failure injection for the
+    /// durability paths.
+    pub put_failures_remaining: Arc<std::sync::atomic::AtomicI64>,
+    /// When set, the first `incoming` puts succeed and every later one
+    /// fails: a real half-write (some objects landed, the upload died).
+    pub put_fails_after: Arc<std::sync::atomic::AtomicI64>,
+    /// Counted successful puts since `put_fails_after` was armed.
+    put_successes: Arc<std::sync::atomic::AtomicI64>,
+    /// When set, deletes fail the same way.
+    pub delete_failures_remaining: Arc<std::sync::atomic::AtomicI64>,
+    pub events: StorageEvents,
+    /// `account_id/bucket/access_key_id` per store_for call, in order.
+    credentials: Arc<std::sync::Mutex<Vec<String>>>,
+    objects: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
+}
+
+impl TestStorage {
+    pub fn shared() -> Arc<TestStorage> {
+        Arc::new(TestStorage::default())
+    }
+
+    pub fn object(&self, key: &str) -> Option<Vec<u8>> {
+        self.objects.lock().unwrap().get(key).cloned()
+    }
+
+    pub fn events(&self) -> Vec<String> {
+        self.events.lock().unwrap().clone()
+    }
+
+    /// Makes the next `incoming` puts fail.
+    pub fn fail_puts(&self, incoming: i64) {
+        self.put_failures_remaining
+            .store(incoming, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Arms the half-write scenario: the first `incoming` puts succeed,
+    /// then everything rejects.
+    pub fn fail_puts_after(&self, incoming: i64) {
+        self.put_fails_after
+            .store(incoming, std::sync::atomic::Ordering::SeqCst);
+        self.put_successes
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Makes the next `incoming` deletes fail.
+    pub fn fail_deletes(&self, incoming: i64) {
+        self.delete_failures_remaining
+            .store(incoming, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Store view into the shared in-memory bucket, driven through the seam.
+/// Store view into the shared in-memory bucket, driven through the seam.
+struct RecordingStore {
+    objects: Arc<std::sync::Mutex<HashMap<String, Vec<u8>>>>,
+    events: StorageEvents,
+    put_failures_remaining: Arc<std::sync::atomic::AtomicI64>,
+    put_fails_after: Arc<std::sync::atomic::AtomicI64>,
+    put_successes: Arc<std::sync::atomic::AtomicI64>,
+    delete_failures_remaining: Arc<std::sync::atomic::AtomicI64>,
+}
+
+impl RecordingStore {
+    fn take(&self, counter: &std::sync::atomic::AtomicI64) -> bool {
+        let mut remaining = counter.load(std::sync::atomic::Ordering::SeqCst);
+        while remaining > 0 {
+            match counter.compare_exchange(
+                remaining,
+                remaining - 1,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            ) {
+                Ok(_) => return true,
+                Err(actual) => remaining = actual,
+            }
+        }
+        false
+    }
+}
+
+impl statesu::storage::ObjectStore for RecordingStore {
+    fn put<'a>(&'a self, key: &'a str, body: &'a [u8]) -> statesu::storage::StoreFuture<'a> {
+        self.events.lock().unwrap().push(format!("put:{key}"));
+        let threshold = self
+            .put_fails_after
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if threshold > 0 {
+            let successes = self
+                .put_successes
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if successes >= threshold {
+                return Box::pin(async {
+                    Err(statesu::error::Error::Internal(
+                        statesu::error::InternalError::new(std::io::Error::other(
+                            "injected half-write failure",
+                        )),
+                    ))
+                });
+            }
+        }
+        if self.take(&self.put_failures_remaining) {
+            return Box::pin(async {
+                Err(statesu::error::Error::Internal(
+                    statesu::error::InternalError::new(std::io::Error::other(
+                        "injected put failure",
+                    )),
+                ))
+            });
+        }
+        self.objects
+            .lock()
+            .unwrap()
+            .insert(key.to_owned(), body.to_vec());
+        Box::pin(async { Ok(()) })
+    }
+
+    fn delete<'a>(&'a self, key: &'a str) -> statesu::storage::StoreFuture<'a> {
+        self.events.lock().unwrap().push(format!("delete:{key}"));
+        if self.take(&self.delete_failures_remaining) {
+            return Box::pin(async {
+                Err(statesu::error::Error::Internal(
+                    statesu::error::InternalError::new(std::io::Error::other(
+                        "injected delete failure",
+                    )),
+                ))
+            });
+        }
+        self.objects.lock().unwrap().remove(key);
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl TestStorage {
+    /// The exact connection material each `store_for` built, in order:
+    /// `account_id/bucket/access_key_id`. Cleanup engineered on snapshot
+    /// vs current config depends on this log.
+    pub fn used_credentials(&self) -> Vec<String> {
+        self.credentials.lock().unwrap().clone()
+    }
+}
+
+impl statesu::storage::StorageFactory for TestStorage {
+    fn verify_connection<'a>(
+        &'a self,
+        connection: &'a statesu::storage::BucketConnection,
+        public_base_url: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), statesu::error::Error>> + Send + 'a>> {
+        self.verified.lock().unwrap().push(format!(
+            "{}:{}:{}",
+            connection.account_id, connection.bucket, connection.access_key_id
+        ));
+        let fail = self.fail_verify.load(std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            let _ = public_base_url;
+            if fail {
+                Err(statesu::error::Error::ConnectionInvalid)
+            } else {
+                Ok(())
+            }
+        })
+    }
+
+    fn store_for(
+        &self,
+        connection: &statesu::storage::BucketConnection,
+    ) -> Result<Arc<dyn statesu::storage::ObjectStore>, statesu::error::Error> {
+        self.credentials.lock().unwrap().push(format!(
+            "{}/{}/{}",
+            connection.account_id, connection.bucket, connection.access_key_id
+        ));
+        Ok(Arc::new(RecordingStore {
+            objects: self.objects.clone(),
+            events: self.events.clone(),
+            put_failures_remaining: self.put_failures_remaining.clone(),
+            put_fails_after: self.put_fails_after.clone(),
+            put_successes: self.put_successes.clone(),
+            delete_failures_remaining: self.delete_failures_remaining.clone(),
+        }))
+    }
+}
+
 impl TestApp {
     pub async fn new() -> TestApp {
         Self::build(|_| {}).await
@@ -136,6 +331,72 @@ impl TestApp {
 
     pub async fn build(configure: impl FnOnce(&mut Config)) -> TestApp {
         Self::build_full(configure, None).await
+    }
+
+    /// An app whose storage seam is the recording in-memory factory; the
+    /// shared bucket stays accessible to the caller for object assertions.
+    pub async fn with_storage() -> (TestApp, Arc<TestStorage>) {
+        let storage = TestStorage::shared();
+        let app = Self::build_storage(|_| {}, storage.clone()).await;
+        (app, storage)
+    }
+
+    /// Same seam, plus a server-owned R2 default bucket for upload tests.
+    pub async fn with_server_storage() -> (TestApp, Arc<TestStorage>) {
+        let storage = TestStorage::shared();
+        let app = Self::build_storage(
+            |config| config.r2_default = Some(Self::test_server_storage()),
+            storage.clone(),
+        )
+        .await;
+        (app, storage)
+    }
+
+    /// The recording seam with arbitrary config shaping.
+    pub async fn with_configured_storage(
+        configure: impl FnOnce(&mut Config),
+    ) -> (TestApp, Arc<TestStorage>) {
+        let storage = TestStorage::shared();
+        let app = Self::build_storage(configure, storage.clone()).await;
+        (app, storage)
+    }
+
+    pub fn test_server_storage() -> statesu::config::R2Default {
+        statesu::config::R2Default {
+            account_id: "abcdef0123456789abcdef0123456789".to_owned(),
+            bucket: "statesu-bucket".to_owned(),
+            prefix: Some("statesu".to_owned()),
+            access_key_id: "server-key".to_owned(),
+            secret_key: "server-secret".to_owned(),
+            public_base_url: "https://media.test.example".to_owned(),
+        }
+    }
+
+    async fn build_storage(
+        configure: impl FnOnce(&mut Config),
+        storage: Arc<TestStorage>,
+    ) -> TestApp {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let mut config = test_config(temp.path().join("statesu.db"));
+        configure(&mut config);
+        let clock = Arc::new(TestClock::at_start(NOW));
+        let (mailer, sent_mail) = TestMailer::shared();
+        let app = statesu::bootstrap::build_app_with_storage(
+            config,
+            clock.clone(),
+            Arc::new(TestAssets::standard()),
+            Arc::new(mailer),
+            None,
+            storage,
+        )
+        .await
+        .expect("build app");
+        TestApp {
+            app,
+            clock,
+            sent_mail,
+            _temp: temp,
+        }
     }
 
     async fn build_full(
@@ -476,6 +737,11 @@ pub fn test_config(db_path: std::path::PathBuf) -> Config {
         max_total_content_bytes: 2 * 1024 * 1024,
         log_json: false,
         turnstile_secret: None,
+        media_key: [11u8; 32],
+        r2_default: None,
+        max_media_bytes: 64 * 1024,
+        max_total_media_bytes: 2 * 1024 * 1024,
+        max_media_per_user: 64,
     }
 }
 
@@ -508,6 +774,13 @@ impl TestAssets {
             "embed/v1.js",
             (
                 b"/* Statesu embed v1 */".as_slice(),
+                "text/javascript; charset=utf-8",
+            ),
+        );
+        files.insert(
+            "embed/v2.js",
+            (
+                b"/* Statesu embed v2 */".as_slice(),
                 "text/javascript; charset=utf-8",
             ),
         );

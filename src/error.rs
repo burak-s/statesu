@@ -17,6 +17,7 @@ pub enum Error {
     Forbidden,
     BlogNotFound,
     PostNotFound,
+    MediaNotFound,
     PatNotFound,
     /// Login succeeded cryptographically but the address was never confirmed.
     EmailNotVerified,
@@ -25,6 +26,15 @@ pub enum Error {
     TurnstileFailed,
     SlugTaken,
     DomainTaken,
+    /// A storage connection failed verification or references bad fields;
+    /// the user can correct their bucket setup and retry.
+    ConnectionInvalid,
+    /// A storage connection still holds media: it can never be deleted
+    /// underneath committed objects.
+    ConnectionInUse,
+    /// A lost race changed the data a snapshot protected; replaying the
+    /// request with a fresh snapshot resolves it.
+    RetrySnapshot,
     PayloadTooLarge,
     UnsupportedMediaType,
     RateLimited {
@@ -95,11 +105,15 @@ impl Error {
             Error::Forbidden => "forbidden",
             Error::BlogNotFound => "blog not found",
             Error::PostNotFound => "post not found",
+            Error::MediaNotFound => "media not found",
             Error::PatNotFound => "token not found",
             Error::EmailNotVerified => "email not verified",
             Error::TurnstileFailed => "turnstile verification failed",
             Error::SlugTaken => "slug already in use",
             Error::DomainTaken => "domain already claimed",
+            Error::ConnectionInvalid => "storage connection invalid",
+            Error::ConnectionInUse => "storage connection in use",
+            Error::RetrySnapshot => "conflicting changes, retry",
             Error::PayloadTooLarge => "request body too large",
             Error::UnsupportedMediaType => "unsupported media type",
             Error::RateLimited { .. } => "rate limit exceeded",
@@ -116,16 +130,21 @@ impl Error {
             Error::InvalidBody
             | Error::InvalidEmail
             | Error::InvalidPassword
-            | Error::InvalidInput => StatusCode::BAD_REQUEST,
+            | Error::InvalidInput
+            | Error::ConnectionInvalid => StatusCode::BAD_REQUEST,
             Error::UserAlreadyExists | Error::SlugTaken | Error::DomainTaken => {
                 StatusCode::CONFLICT
             }
+            Error::ConnectionInUse | Error::RetrySnapshot => StatusCode::CONFLICT,
             Error::InvalidCredentials
             | Error::MissingToken
             | Error::InvalidToken
             | Error::TokenExpired => StatusCode::UNAUTHORIZED,
             Error::Forbidden => StatusCode::FORBIDDEN,
-            Error::BlogNotFound | Error::PostNotFound | Error::PatNotFound => StatusCode::NOT_FOUND,
+            Error::BlogNotFound
+            | Error::PostNotFound
+            | Error::PatNotFound
+            | Error::MediaNotFound => StatusCode::NOT_FOUND,
             Error::EmailNotVerified => StatusCode::FORBIDDEN,
             Error::TurnstileFailed => StatusCode::FORBIDDEN,
             Error::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
@@ -158,9 +177,18 @@ mod tests {
         assert_eq!(Error::Forbidden.message(), "forbidden");
         assert_eq!(Error::BlogNotFound.message(), "blog not found");
         assert_eq!(Error::PostNotFound.message(), "post not found");
+        assert_eq!(Error::MediaNotFound.message(), "media not found");
         assert_eq!(Error::PatNotFound.message(), "token not found");
         assert_eq!(Error::EmailNotVerified.message(), "email not verified");
         assert_eq!(Error::SlugTaken.message(), "slug already in use");
+        assert_eq!(
+            Error::ConnectionInvalid.message(),
+            "storage connection invalid"
+        );
+        assert_eq!(
+            Error::ConnectionInUse.message(),
+            "storage connection in use"
+        );
         assert_eq!(Error::DomainTaken.message(), "domain already claimed");
         assert_eq!(Error::PayloadTooLarge.message(), "request body too large");
         assert_eq!(

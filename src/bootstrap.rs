@@ -17,12 +17,17 @@ use crate::clock::Clock;
 use crate::config::{Config, POOL_ACQUIRE_TIMEOUT};
 use crate::crypto::email::EmailCipher;
 use crate::crypto::password::PasswordHasher;
+use crate::crypto::secret::SecretCipher;
 use crate::error::{Error, InternalError};
 use crate::http::rate_limit::RateLimiter;
 use crate::http::static_files::StaticAssets;
 use crate::http::{AppState, Limiters, build_router};
+use crate::media::media_repo::MediaRepository;
+use crate::media::repo::StorageConnectionRepository;
+use crate::media::service::{MediaService, ServerStorage};
 use crate::post::repo::PostRepository;
 use crate::post::service::PostService;
+use crate::storage::{BucketConnection, R2StorageFactory, StorageFactory};
 
 /// The assembled application: SQLite pool, concrete services and the router.
 /// Tests build exactly this composition root, so the binary and the test
@@ -46,14 +51,16 @@ impl App {
 /// Google Fonts stylesheets and font files, no other remote origins.
 // The Turnstile origins cover the login/register widget: its script comes
 // from `challenges.cloudflare.com` and renders inside an iframe from the
-// same origin. The dashboard pages are served with these headers too.
+// same origin. The dashboard pages are served with these headers too; media
+// uploads live on user-controlled https buckets, so the preview's <img>
+// elements point there (img-src https:).
 const DOCS_CSP: &str = "default-src 'self'; \
     script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; \
     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
     font-src 'self' https://fonts.gstatic.com; \
     connect-src 'self'; \
     frame-src https://challenges.cloudflare.com; \
-    img-src 'self' data:; \
+    img-src 'self' data: https:; \
     object-src 'none'; \
     base-uri 'self'; \
     frame-ancestors 'none'";
@@ -97,6 +104,22 @@ pub async fn build_app_with_turnstile(
     mailer: Arc<dyn crate::mail::Mailer>,
     turnstile: Option<Arc<dyn TurnstileVerifier>>,
 ) -> Result<App, Error> {
+    // The production factory fails only if shared reqwest setup fails;
+    // nothing here is user input.
+    let storage = Arc::new(R2StorageFactory::new(clock.clone())?);
+    build_app_with_storage(config, clock, assets, mailer, turnstile, storage).await
+}
+
+/// Composition root additionally accepting a storage factory seam; tests
+/// substitute an in-memory sink so no media network call ever happens.
+pub async fn build_app_with_storage(
+    config: Config,
+    clock: Arc<dyn Clock>,
+    assets: Arc<dyn StaticAssets>,
+    mailer: Arc<dyn crate::mail::Mailer>,
+    turnstile: Option<Arc<dyn TurnstileVerifier>>,
+    storage: Arc<dyn StorageFactory>,
+) -> Result<App, Error> {
     let pool = open_database(&config).await?;
     let users = UserRepository::new(pool.clone());
     let blog_repo = BlogRepository::new(pool.clone());
@@ -121,10 +144,32 @@ pub async fn build_app_with_turnstile(
     let blog_service = BlogService::new(blog_repo.clone(), clock.clone());
     let post_service = PostService::new(
         post_repo,
-        blog_repo,
+        blog_repo.clone(),
         clock.clone(),
         config.max_posts_per_user,
         config.max_total_content_bytes,
+    );
+    let server_storage = config.r2_default.clone().map(|r2| ServerStorage {
+        connection: BucketConnection {
+            account_id: r2.account_id,
+            bucket: r2.bucket,
+            prefix: r2.prefix.unwrap_or_default(),
+            access_key_id: r2.access_key_id,
+            secret_key: r2.secret_key,
+        },
+        public_base_url: r2.public_base_url,
+    });
+    let media_service = MediaService::new(
+        StorageConnectionRepository::new(pool.clone()),
+        MediaRepository::new(pool.clone()),
+        blog_repo.clone(),
+        SecretCipher::new(config.media_key),
+        storage,
+        clock.clone(),
+        server_storage,
+        config.max_media_bytes,
+        config.max_total_media_bytes,
+        config.max_media_per_user,
     );
 
     let limiters = Limiters {
@@ -145,6 +190,7 @@ pub async fn build_app_with_turnstile(
         mailer,
         blogs: blog_service,
         posts: post_service,
+        media: media_service,
         assets,
         limiters,
         csp: Arc::from(DOCS_CSP),

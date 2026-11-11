@@ -20,6 +20,7 @@ pub mod blog;
 pub mod client_ip;
 pub mod error;
 pub mod json_body;
+pub mod media;
 pub mod post;
 pub mod public;
 pub mod rate_limit;
@@ -34,6 +35,7 @@ pub struct AppState {
     pub auth_service: crate::auth::service::AuthService,
     pub blogs: crate::blog::service::BlogService,
     pub posts: crate::post::service::PostService,
+    pub media: crate::media::service::MediaService,
     pub assets: Arc<dyn static_files::StaticAssets>,
     /// Verification mail delivery; never called outside register/resend.
     pub mailer: Arc<dyn crate::mail::Mailer>,
@@ -55,6 +57,9 @@ pub struct Limiters {
 /// the whole handler including request body consumption.
 const READ_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+/// Decode/encode plus provider round-trips run inside one upload request;
+/// the connection drops long before the work could finish without one.
+const MEDIA_UPLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// JSON body limits: auth endpoints accept 16 KiB, blog/post endpoints
 /// accept 256 KiB so imported Markdown files fit.
@@ -87,6 +92,26 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/blogs/{blog_id}/posts/{post_id}",
             get(post::get).patch(post::update).delete(post::delete),
+        )
+        .route(
+            "/blogs/{blog_id}/storage-connections",
+            post(media::create_connection).get(media::list_connections),
+        )
+        .route(
+            "/blogs/{blog_id}/storage-connections/{connection_id}",
+            patch(media::update_connection).delete(media::delete_connection),
+        )
+        .route(
+            "/blogs/{blog_id}/media-storage",
+            get(media::blog_storage).put(media::set_blog_storage),
+        )
+        .route(
+            "/blogs/{blog_id}/media",
+            post(media::create_media).get(media::list_media),
+        )
+        .route(
+            "/blogs/{blog_id}/media/{media_id}",
+            delete(media::delete_media),
         )
         .route("/public/blogs/{blog_slug}", get(public::blog))
         .route("/public/blogs/{blog_slug}/posts", get(public::posts))
@@ -206,14 +231,19 @@ pub async fn request_guard(
 }
 
 /// Timeouts and body-size guards applied around the handler itself.
-pub async fn request_core(request: Request, next: Next) -> Response {
+pub async fn request_core(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let is_write = request.method() != Method::GET && request.method() != Method::HEAD;
-    let timeout = if is_write {
+    let path = request.uri().path().to_owned();
+    // Media processing plus storage round-traps run inside one request:
+    // uploads get their own, longer window.
+    let timeout = if is_media_upload(request.method(), &path) {
+        MEDIA_UPLOAD_TIMEOUT
+    } else if is_write {
         WRITE_TIMEOUT
     } else {
         READ_TIMEOUT
     };
-    let request = match body_limit_for(request.method(), request.uri().path()) {
+    let request = match body_limit_for(&state, request.method(), &path) {
         Some(limit) => limit_body(request, limit),
         None => request,
     };
@@ -223,11 +253,28 @@ pub async fn request_core(request: Request, next: Next) -> Response {
     }
 }
 
-fn body_limit_for(method: &Method, path: &str) -> Option<usize> {
+fn is_media_upload(method: &Method, path: &str) -> bool {
+    method == Method::POST && media_root_path(path) == Some("media")
+}
+
+/// The segment that tags a `/blogs/{blog_id}/{segment}` management path,
+/// deciding body limits and timeouts for the media upload.
+fn media_root_path(path: &str) -> Option<&str> {
+    let mut segments = path.split('/').filter(|segment| !segment.is_empty());
+    if segments.next() != Some("blogs") {
+        return None;
+    }
+    segments.next();
+    segments.next()
+}
+
+fn body_limit_for(state: &AppState, method: &Method, path: &str) -> Option<usize> {
     match *method {
         Method::POST | Method::PATCH | Method::PUT => {
             if path.starts_with("/auth") {
                 Some(AUTH_BODY_LIMIT)
+            } else if is_media_upload(method, path) {
+                Some(state.config.max_media_bytes)
             } else if path.starts_with("/blogs") {
                 Some(CMS_BODY_LIMIT)
             } else {

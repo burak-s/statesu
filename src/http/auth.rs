@@ -274,6 +274,27 @@ impl FromRequestParts<AppState> for AuthedWriter {
     }
 }
 
+/// Session-only flavor for secret-bearing routes (media storage
+/// connections): personal access tokens are always rejected here, so
+/// server-side credential material is only ever touched from the browser
+/// dashboard.
+pub struct AuthedSession(pub UserRecord);
+
+impl FromRequestParts<AppState> for AuthedSession {
+    type Rejection = Error;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let session = AuthedUser::from_request_parts(parts, state).await?;
+        if session.session_token.is_none() {
+            return Err(Error::Forbidden);
+        }
+        Ok(AuthedSession(session.user))
+    }
+}
+
 /// `Authorization: Bearer` → personal access token. PATs serve the content
 /// API only; `/auth/*` exclusively belongs to browser sessions.
 async fn authenticate_bearer(

@@ -314,3 +314,197 @@ async fn public_responses_are_cacheable_but_nosniffed() {
     assert_eq!(response.header("x-content-type-options"), Some("nosniff"));
     assert!(response.header("cache-control").is_none());
 }
+// -------------------------------------------------------------------------
+// Public delivery metadata for referenced media
+// -------------------------------------------------------------------------
+
+/// 800x400 solid PNG upload fixture for the metadata tests.
+async fn upload_media_fixture(app: &TestApp, token: &str, blog_id: &str) -> serde_json::Value {
+    let image = image::RgbaImage::from_pixel(800, 400, image::Rgba([34, 99, 200, 255]));
+    let mut bytes = Vec::new();
+    image
+        .write_to(
+            &mut std::io::Cursor::new(&mut bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("fixture encode");
+    let response = app
+        .send(
+            Request::builder()
+                .method(Method::POST)
+                .uri(format!("/blogs/{blog_id}/media"))
+                .header("authorization", common::bearer(token))
+                .body(Body::from(bytes))
+                .unwrap(),
+        )
+        .await;
+    assert_eq!(
+        response.status,
+        axum::http::StatusCode::CREATED,
+        "{}",
+        response.text()
+    );
+    response.json()
+}
+
+#[tokio::test]
+async fn public_posts_carry_metadata_only_for_referenced_media() {
+    let (app, _storage) = TestApp::with_server_storage().await;
+    let token = register_token(&app, EMAIL, PASSWORD).await;
+    let blog_id = create_blog(&app, &token, "Public Media", "public-media")
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let media = upload_media_fixture(&app, &token, &blog_id).await;
+    let referenced_url = media["public_url"].as_str().unwrap().to_owned();
+
+    create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({
+            "slug": "with-image",
+            "title": "With Image",
+            "content_markdown": format!("# Header\n\n![Arka plan]({referenced_url}){{width=640}}"),
+            "status": "published"
+        }),
+    )
+    .await
+    .status_check(axum::http::StatusCode::CREATED);
+    create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({
+            "slug": "without-image",
+            "title": "Without Image",
+            "content_markdown": "no media here",
+            "status": "published"
+        }),
+    )
+    .await
+    .status_check(axum::http::StatusCode::CREATED);
+
+    // Single post: media metadata rides along only when referenced.
+    let single = app
+        .send(request_with_origin(
+            Method::GET,
+            "/public/blogs/public-media/posts/with-image",
+            SITE_ORIGIN,
+        ))
+        .await;
+    assert_eq!(single.status, StatusCode::OK, "{}", single.text());
+    let body = single.json();
+    assert_eq!(body["media"].as_array().unwrap().len(), 1);
+    let meta = &body["media"][0];
+    assert_eq!(meta["source_url"], referenced_url);
+    assert_eq!(meta["source_width"], 800);
+    assert_eq!(meta["source_height"], 400);
+    // Responsive variants are exposed with their widths.
+    let variants = meta["variants"].as_array().unwrap();
+    assert_eq!(variants.len(), 1);
+    assert_eq!(variants[0]["width"], 640);
+    assert!(variants[0]["url"].as_str().unwrap().ends_with("/w640.png"));
+    // The inspection surface is the largest variant.
+    assert!(meta["zoom_url"].as_str().unwrap().ends_with("/w640.png"));
+
+    // Unreferenced posts carry no media key.
+    let plain = app
+        .send(request_with_origin(
+            Method::GET,
+            "/public/blogs/public-media/posts/without-image",
+            SITE_ORIGIN,
+        ))
+        .await;
+    assert_eq!(plain.status, StatusCode::OK);
+    // Unreferenced posts omit the key altogether.
+    assert!(
+        plain
+            .json()
+            .get("media")
+            .and_then(|value| value.as_array())
+            .is_none_or(|items| items.is_empty())
+    );
+
+    // The listing flavor matches: one item enriched, one not.
+    let listing = app
+        .send(request_with_origin(
+            Method::GET,
+            "/public/blogs/public-media/posts",
+            SITE_ORIGIN,
+        ))
+        .await;
+    assert_eq!(listing.status, StatusCode::OK);
+    let items = listing.json()["items"].as_array().unwrap().to_vec();
+    assert_eq!(items.len(), 2);
+    let enriched: Vec<_> = items
+        .iter()
+        .filter(|item| {
+            item.get("media")
+                .and_then(|value| value.as_array())
+                .is_some_and(|media| !media.is_empty())
+        })
+        .collect();
+    assert_eq!(enriched.len(), 1);
+    assert_eq!(enriched[0]["media"][0]["source_url"], referenced_url);
+}
+
+#[tokio::test]
+async fn deleted_media_drops_out_of_public_metadata() {
+    let (app, _storage) = TestApp::with_server_storage().await;
+    let token = register_token(&app, EMAIL, PASSWORD).await;
+    let blog_id = create_blog(&app, &token, "Media Gone", "media-gone")
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let media = upload_media_fixture(&app, &token, &blog_id).await;
+    let url = media["public_url"].as_str().unwrap().to_owned();
+    let media_id = media["id"].as_str().unwrap().to_owned();
+
+    create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({
+            "slug": "ghost",
+            "title": "Ghost",
+            "content_markdown": format!("![ghost]({url})"),
+            "status": "published"
+        }),
+    )
+    .await
+    .status_check(axum::http::StatusCode::CREATED);
+
+    common::authed(
+        &app,
+        Method::DELETE,
+        &format!("/blogs/{blog_id}/media/{media_id}"),
+        &token,
+    )
+    .await;
+
+    let response = app
+        .send(request_with_origin(
+            Method::GET,
+            "/public/blogs/media-gone/posts/ghost",
+            SITE_ORIGIN,
+        ))
+        .await;
+    assert_eq!(response.status, StatusCode::OK);
+    // The Markdown is untouched, but there is no metadata to serve anymore.
+    assert_eq!(
+        response.json()["content_markdown"],
+        format!("![ghost]({url})")
+    );
+    assert!(
+        response
+            .json()
+            .get("media")
+            .and_then(|value| value.as_array())
+            .is_none_or(|items| items.is_empty())
+    );
+}

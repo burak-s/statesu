@@ -18,6 +18,16 @@ pub const MAX_CONCURRENCY_ENV: &str = "STATESU_MAX_CONCURRENCY";
 pub const ARGON2_CONCURRENCY_ENV: &str = "STATESU_ARGON2_CONCURRENCY";
 pub const MAX_POSTS_PER_USER_ENV: &str = "STATESU_MAX_POSTS_PER_USER";
 pub const MAX_TOTAL_CONTENT_BYTES_ENV: &str = "STATESU_MAX_TOTAL_CONTENT_BYTES";
+pub const MEDIA_KEY_ENV: &str = "STATESU_MEDIA_KEY";
+pub const R2_ACCOUNT_ID_ENV: &str = "STATESU_R2_ACCOUNT_ID";
+pub const R2_BUCKET_ENV: &str = "STATESU_R2_BUCKET";
+pub const R2_PREFIX_ENV: &str = "STATESU_R2_PREFIX";
+pub const R2_ACCESS_KEY_ID_ENV: &str = "STATESU_R2_ACCESS_KEY_ID";
+pub const R2_SECRET_ACCESS_KEY_ENV: &str = "STATESU_R2_SECRET_ACCESS_KEY";
+pub const R2_PUBLIC_BASE_URL_ENV: &str = "STATESU_R2_PUBLIC_BASE_URL";
+pub const MAX_MEDIA_BYTES_ENV: &str = "STATESU_MAX_MEDIA_BYTES";
+pub const MAX_TOTAL_MEDIA_BYTES_ENV: &str = "STATESU_MAX_TOTAL_MEDIA_BYTES";
+pub const MAX_MEDIA_PER_USER_ENV: &str = "STATESU_MAX_MEDIA_PER_USER";
 pub const LOG_JSON_ENV: &str = "STATESU_LOG_JSON";
 pub const TURNSTILE_SECRET_KEY_ENV: &str = "STATESU_TURNSTILE_SECRET_KEY";
 
@@ -31,6 +41,9 @@ const DEFAULT_ARGON2_CONCURRENCY: usize = 2;
 /// hard ceilings, not watermarks. Abuse grows linearly with user count.
 const DEFAULT_MAX_POSTS_PER_USER: usize = 500;
 const DEFAULT_MAX_TOTAL_CONTENT_BYTES: usize = 32 * 1024 * 1024;
+const DEFAULT_MAX_MEDIA_BYTES: usize = 10 * 1024 * 1024;
+const DEFAULT_MAX_TOTAL_MEDIA_BYTES: usize = 256 * 1024 * 1024;
+const DEFAULT_MAX_MEDIA_PER_USER: usize = 1000;
 
 #[derive(Clone)]
 pub struct Config {
@@ -61,6 +74,36 @@ pub struct Config {
     pub log_json: bool,
     /// Cloudflare Turnstile secret key; `None` disables the human check.
     pub turnstile_secret: Option<String>,
+    /// AES-256-GCM key decrypting user-supplied R2 access credentials at
+    /// rest; exactly 32 bytes. Distinct from the email key.
+    pub media_key: [u8; 32],
+    /// Server-owned R2 bucket used for new media on blogs without a custom
+    /// connection; `None` disables media uploads server-wide.
+    pub r2_default: Option<R2Default>,
+    /// Hard cap on a single uploaded media file
+    /// (`STATESU_MAX_MEDIA_BYTES`).
+    pub max_media_bytes: usize,
+    /// Hard cap on stored media bytes per user across all blogs
+    /// (`STATESU_MAX_TOTAL_MEDIA_BYTES`).
+    pub max_total_media_bytes: usize,
+    /// Hard cap on media records per user across all blogs
+    /// (`STATESU_MAX_MEDIA_PER_USER`).
+    pub max_media_per_user: usize,
+}
+
+/// The server's own R2 bucket; secrets stay in the environment, never in
+/// user-owned rows. `public_base_url` hosts the objects publicly, e.g.
+/// `https://media.example.com`.
+#[derive(Debug, Clone)]
+pub struct R2Default {
+    pub account_id: String,
+    pub bucket: String,
+    /// Key prefix inside the bucket dedicated to Statesu; empty means
+    /// bucket root.
+    pub prefix: Option<String>,
+    pub access_key_id: String,
+    pub secret_key: String,
+    pub public_base_url: String,
 }
 
 /// The public `scheme://host[:port]` origin parsed from `PUBLIC_URL_ENV`.
@@ -192,7 +235,7 @@ impl Config {
         let addr =
             normalize_addr(&env_no_empty(ADDR_ENV)?.unwrap_or_else(|| DEFAULT_ADDR.to_owned()))?;
         let db_path = env_no_empty(DB_ENV)?.unwrap_or_else(|| DEFAULT_DB.to_owned());
-        let email_key = decode_exact_32(&env_required(EMAIL_KEY_ENV)?)?;
+        let email_key = decode_exact_32(&env_required(EMAIL_KEY_ENV)?, EMAIL_KEY_ENV)?;
         let email_hmac_key =
             decode_at_least_32(&env_required(EMAIL_HMAC_KEY_ENV)?, EMAIL_HMAC_KEY_ENV)?;
         let resend_api_key = env_required(RESEND_API_KEY_ENV)?;
@@ -249,6 +292,20 @@ impl Config {
             .transpose()?
             .unwrap_or(DEFAULT_MAX_TOTAL_CONTENT_BYTES);
         let turnstile_secret = env_no_empty(TURNSTILE_SECRET_KEY_ENV)?;
+        let media_key = decode_exact_32(&env_required(MEDIA_KEY_ENV)?, MEDIA_KEY_ENV)?;
+        let r2_default = r2_default_from_env()?;
+        let max_media_bytes = env_no_empty(MAX_MEDIA_BYTES_ENV)?
+            .map(|v| parse_usize(&v, MAX_MEDIA_BYTES_ENV))
+            .transpose()?
+            .unwrap_or(DEFAULT_MAX_MEDIA_BYTES);
+        let max_total_media_bytes = env_no_empty(MAX_TOTAL_MEDIA_BYTES_ENV)?
+            .map(|v| parse_usize(&v, MAX_TOTAL_MEDIA_BYTES_ENV))
+            .transpose()?
+            .unwrap_or(DEFAULT_MAX_TOTAL_MEDIA_BYTES);
+        let max_media_per_user = env_no_empty(MAX_MEDIA_PER_USER_ENV)?
+            .map(|v| parse_usize(&v, MAX_MEDIA_PER_USER_ENV))
+            .transpose()?
+            .unwrap_or(DEFAULT_MAX_MEDIA_PER_USER);
         let log_json = match env_no_empty(LOG_JSON_ENV)? {
             Some(v) => match v.to_ascii_lowercase().as_str() {
                 "true" | "1" => true,
@@ -280,8 +337,82 @@ impl Config {
             max_total_content_bytes,
             log_json,
             turnstile_secret,
+            media_key,
+            r2_default,
+            max_media_bytes,
+            max_total_media_bytes,
+            max_media_per_user,
         })
     }
+}
+
+/// The optional server-owned R2 bucket; missing and empty group all components
+/// consistently. A partially set group never boots: half a bucket config
+/// looks like a working deployment but uploads fail at runtime.
+fn r2_default_from_env() -> Result<Option<R2Default>, Error> {
+    let parts = [
+        (R2_ACCOUNT_ID_ENV, env_no_empty(R2_ACCOUNT_ID_ENV)?),
+        (R2_BUCKET_ENV, env_no_empty(R2_BUCKET_ENV)?),
+        (R2_PREFIX_ENV, env_no_empty(R2_PREFIX_ENV)?),
+        (R2_ACCESS_KEY_ID_ENV, env_no_empty(R2_ACCESS_KEY_ID_ENV)?),
+        (
+            R2_SECRET_ACCESS_KEY_ENV,
+            env_no_empty(R2_SECRET_ACCESS_KEY_ENV)?,
+        ),
+        (
+            R2_PUBLIC_BASE_URL_ENV,
+            env_no_empty(R2_PUBLIC_BASE_URL_ENV)?,
+        ),
+    ];
+    let all_set = parts.iter().all(|(_, value)| value.is_some());
+    let none_set = parts.iter().all(|(_, value)| value.is_none());
+    if none_set {
+        return Ok(None);
+    }
+    if !all_set {
+        let missing: Vec<&str> = parts
+            .iter()
+            .filter(|(_, value)| value.is_none())
+            .map(|(name, _)| *name)
+            .collect();
+        return Err(Error::Config(format!(
+            "{} must be set together or all omitted",
+            missing.join(", ")
+        )));
+    }
+    let mut part_values = parts.into_iter().map(|(_, value)| value.unwrap());
+    let account_id = part_values.next().expect("checked present");
+    let bucket = part_values.next().expect("checked present");
+    let prefix = part_values.next().expect("checked present");
+    let access_key_id = part_values.next().expect("checked present");
+    let secret_key = part_values.next().expect("checked present");
+    let public_base_url = part_values.next().expect("checked present");
+    // The env group shares the same field rules as user-created connections;
+    // the validation helpers only answer "invalid", so the config error
+    // carries the responsible variable name.
+    let account_id = crate::media::validate_account_id(&account_id).map_err(|_| {
+        Error::Config(format!(
+            "{R2_ACCOUNT_ID_ENV} must be a 32-character hex account id"
+        ))
+    })?;
+    let bucket = crate::media::validate_bucket_name(&bucket)
+        .map_err(|_| Error::Config(format!("{R2_BUCKET_ENV} must be a valid R2 bucket name")))?;
+    let prefix = crate::media::normalize_prefix(Some(&prefix))
+        .map_err(|_| Error::Config(format!("{R2_PREFIX_ENV} must be a valid key prefix")))?;
+    let public_base_url = crate::media::validate_public_base_url(&public_base_url)
+        .map_err(|_| {
+            Error::Config(format!(
+                "{R2_PUBLIC_BASE_URL_ENV} must be an https origin (with optional path), no trailing slash"
+            ))
+        })?;
+    Ok(Some(R2Default {
+        account_id,
+        bucket,
+        prefix,
+        access_key_id,
+        secret_key,
+        public_base_url,
+    }))
 }
 
 fn env_required(name: &str) -> Result<String, Error> {
@@ -318,11 +449,11 @@ fn normalize_addr(addr: &str) -> Result<String, Error> {
         .map_err(|_| Error::Config(format!("invalid bind address {ADDR_ENV}: {addr}")))
 }
 
-fn decode_exact_32(input: &str) -> Result<[u8; 32], Error> {
+fn decode_exact_32(input: &str, env: &str) -> Result<[u8; 32], Error> {
     let decoded = decode_key(input)?;
     if decoded.len() != 32 {
         return Err(Error::Config(format!(
-            "{EMAIL_KEY_ENV} must decode to exactly 32 bytes"
+            "{env} must decode to exactly 32 bytes"
         )));
     }
     let mut key = [0u8; 32];
@@ -404,9 +535,9 @@ mod tests {
     #[test]
     fn key_decode_enforcement() {
         let short = base64::engine::general_purpose::STANDARD.encode([7u8; 16]);
-        assert!(decode_exact_32(&short).is_err());
+        assert!(decode_exact_32(&short, EMAIL_KEY_ENV).is_err());
         let good = base64::engine::general_purpose::STANDARD.encode([7u8; 32]);
-        assert!(decode_exact_32(&good).is_ok());
+        assert!(decode_exact_32(&good, EMAIL_KEY_ENV).is_ok());
         assert!(decode_key("!!!").is_err());
     }
 }

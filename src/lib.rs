@@ -19,5 +19,7 @@ pub mod error;
 pub mod http;
 pub mod ids;
 pub mod mail;
+pub mod media;
 pub mod pagination;
 pub mod post;
+pub mod storage;

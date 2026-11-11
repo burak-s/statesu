@@ -255,12 +255,14 @@ impl PostService {
     }
 
     /// Public listing for a blog slug: only published, not deleted posts.
+    /// The blog id rides along so the caller can enrich the envelope
+    /// without a second slug lookup.
     pub async fn public_page(
         &self,
         blog_slug: &str,
         page_param: Option<&str>,
         size_param: Option<&str>,
-    ) -> Result<ListResponse<PublicPostResponse>, Error> {
+    ) -> Result<(ListResponse<PublicPostResponse>, Uuid), Error> {
         let blog_id = self.public_blog_id(blog_slug).await?;
         let page = parse_page_number(page_param)?;
         let size = parse_page_size(size_param)?;
@@ -274,20 +276,24 @@ impl PostService {
             )
             .await?;
         let total = self.posts.count_published(&blog_id).await?;
-        Ok(ListResponse {
-            items: rows.into_iter().map(PublicPostResponse::from).collect(),
-            page,
-            size,
-            total,
-        })
+        Ok((
+            ListResponse {
+                items: rows.into_iter().map(PublicPostResponse::from).collect(),
+                page,
+                size,
+                total,
+            },
+            blog_id,
+        ))
     }
 
-    /// Public read of one published post by its slug.
+    /// Public read of one published post by its slug; the blog id rides
+    /// along for the same enrichment reason as `public_page`.
     pub async fn public_post(
         &self,
         blog_slug: &str,
         post_slug: &str,
-    ) -> Result<PublicPostResponse, Error> {
+    ) -> Result<(PublicPostResponse, Uuid), Error> {
         let blog_id = self.public_blog_id(blog_slug).await?;
         let row = self
             .posts
@@ -297,7 +303,7 @@ impl PostService {
         if row.status != STATUS_PUBLISHED {
             return Err(Error::PostNotFound);
         }
-        Ok(PublicPostResponse::from(row))
+        Ok((PublicPostResponse::from(row), blog_id))
     }
 
     async fn owned_blog(

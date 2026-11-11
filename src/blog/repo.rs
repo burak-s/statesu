@@ -155,6 +155,72 @@ impl BlogRepository {
         Ok(())
     }
 
+    /// Deleting a blog together with its durable media-cleanup jobs, in
+    /// one transaction: either the rows vanish and the bucket cleanup is
+    /// durable, or nothing happened — never a deleted blog whose media
+    /// objects went untracked. `expected_fingerprints` guard against any
+    /// media mutation racing a snapshot built outside the transaction
+    /// (ids, statuses and variant paths all compared; an upload that
+    /// finalizes between snapshot and delete keeps its id but changes
+    /// its paths); mismatch returns a retryable conflict before deleting
+    /// anything.
+    pub async fn delete_with_media_cleanup(
+        &self,
+        id: &uuid::Uuid,
+        owner_id: &uuid::Uuid,
+        expected_fingerprints: &[crate::media::media_repo::MediaFingerprint],
+        jobs: &[crate::media::media_repo::MediaJobInsert],
+    ) -> Result<(), Error> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|_| failed("blog delete transaction"))?;
+        let mut expected = crate::media::media_repo::MediaRepository::new(self.pool.clone())
+            .blog_media_fingerprints_tx(&mut tx, owner_id, id)
+            .await?;
+        let mut snapshot: Vec<crate::media::media_repo::MediaFingerprint> =
+            expected_fingerprints.to_vec();
+        expected.sort_by_key(|item| item.media_id);
+        snapshot.sort_by_key(|item| item.media_id);
+        if expected != snapshot {
+            return Err(Error::RetrySnapshot);
+        }
+        let result = sqlx::query("DELETE FROM blogs WHERE id = ? AND owner_id = ?")
+            .bind(id.to_string())
+            .bind(owner_id.to_string())
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| failed("blog delete"))?;
+        if result.rows_affected() != 1 {
+            return Err(Error::BlogNotFound);
+        }
+        for job in jobs {
+            let result = sqlx::query(
+                "INSERT INTO media_jobs (id, owner_id, media_id, blog_id, kind, payload, \
+                 attempts, next_run_at, created_at) \
+                 VALUES (?, ?, NULL, ?, ?, ?, 0, ?, ?)",
+            )
+            .bind(job.id.to_string())
+            .bind(job.owner_id.to_string())
+            .bind(job.blog_id.map(|id| id.to_string()))
+            .bind(job.kind)
+            .bind(&job.payload)
+            .bind(job.next_run_at)
+            .bind(job.created_at)
+            .execute(&mut *tx)
+            .await
+            .map_err(|_| failed("media job insert"))?;
+            if result.rows_affected() != 1 {
+                return Err(failed("media job insert affected no row"));
+            }
+        }
+        tx.commit()
+            .await
+            .map_err(|_| failed("blog delete commit"))?;
+        Ok(())
+    }
+
     /// Replaces the whole origin list atomically.
     pub async fn replace_origins(
         &self,

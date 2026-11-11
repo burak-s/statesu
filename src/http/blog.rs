@@ -40,7 +40,14 @@ pub async fn delete(
     AuthedWriter(user): AuthedWriter,
     Path(blog_id): Path<String>,
 ) -> Result<StatusCode, Error> {
-    state.blogs.delete(user.id, &blog_id).await?;
+    // Blog and durable media-cleanup jobs commit in one transaction: a
+    // crash can never delete the rows while the bucket cleanup metadata
+    // disappears with them.
+    let blog_uuid = crate::ids::parse_uuid_v7(&blog_id)?;
+    state
+        .media
+        .delete_blog_with_cleanup(user.id, blog_uuid)
+        .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

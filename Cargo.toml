@@ -29,6 +29,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 rust-embed = "8"
 uuid = { version = "1", features = ["v7", "serde"] }
+# Media pipeline: bounded decode/re-encode for the three accepted formats;
+# EXIF orientation for phone-shot JPEGs. Both are pure Rust.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# EXIF parsing (orientation for phone-shot JPEGs); pure Rust. Library
+# name: `exif`.
+kamadak-exif = "0.6"
 
 [dev-dependencies]
 tempfile = "3"

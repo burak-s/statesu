@@ -1,6 +1,8 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use statesu::clock::Clock;
+
 use statesu::bootstrap::build_app;
 use statesu::clock::SystemClock;
 use statesu::config::Config;
@@ -34,6 +36,20 @@ async fn serve(config: Config) -> Result<(), Box<dyn std::error::Error>> {
     let clock = Arc::new(SystemClock);
     let assets = Arc::new(EmbeddedDocs);
     let app = build_app(config, clock, assets).await?;
+
+    // Media maintenance: object cleanup retries still run when the request
+    // that failed is long gone.
+    let maintenance_media = app.state.media.clone();
+    tokio::spawn(async move {
+        let clock = Arc::new(SystemClock);
+        loop {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            match maintenance_media.run_maintenance(clock.now()).await {
+                Ok(()) => {}
+                Err(err) => tracing::error!(%err, "media maintenance failed"),
+            }
+        }
+    });
 
     let listener = tokio::net::TcpListener::bind(&app.state.config.addr).await?;
     tracing::info!(addr = %app.state.config.addr, "statesu listening");
