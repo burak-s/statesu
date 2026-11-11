@@ -34,6 +34,13 @@ jobs:
            env:
               STATESU_EMAIL_KEY: ${{ secrets.STATESU_EMAIL_KEY }}
               STATESU_EMAIL_HMAC_KEY: ${{ secrets.STATESU_EMAIL_HMAC_KEY }}
+              STATESU_MEDIA_KEY: ${{ secrets.STATESU_MEDIA_KEY }}
+              STATESU_R2_ACCOUNT_ID: ${{ secrets.STATESU_R2_ACCOUNT_ID }}
+              STATESU_R2_BUCKET: ${{ secrets.STATESU_R2_BUCKET }}
+              STATESU_R2_PREFIX: ${{ vars.STATESU_R2_PREFIX }}
+              STATESU_R2_ACCESS_KEY_ID: ${{ secrets.STATESU_R2_ACCESS_KEY_ID }}
+              STATESU_R2_SECRET_ACCESS_KEY: ${{ secrets.STATESU_R2_SECRET_ACCESS_KEY }}
+              STATESU_R2_PUBLIC_BASE_URL: ${{ vars.STATESU_R2_PUBLIC_BASE_URL }}
               STATESU_RESEND: ${{ secrets.STATESU_RESEND }}
               STATESU_MAIL_FROM: ${{ secrets.STATESU_MAIL_FROM }}
               STATESU_TURNSTILE_SECRET_KEY: ${{ secrets.STATESU_TURNSTILE_SECRET_KEY }}
@@ -47,13 +54,16 @@ jobs:
               STATESU_ARGON2_CONCURRENCY: ${{ vars.STATESU_ARGON2_CONCURRENCY }}
               STATESU_MAX_POSTS_PER_USER: ${{ vars.STATESU_MAX_POSTS_PER_USER }}
               STATESU_MAX_TOTAL_CONTENT_BYTES: ${{ vars.STATESU_MAX_TOTAL_CONTENT_BYTES }}
+              STATESU_MAX_MEDIA_BYTES: ${{ vars.STATESU_MAX_MEDIA_BYTES }}
+              STATESU_MAX_TOTAL_MEDIA_BYTES: ${{ vars.STATESU_MAX_TOTAL_MEDIA_BYTES }}
+              STATESU_MAX_MEDIA_PER_USER: ${{ vars.STATESU_MAX_MEDIA_PER_USER }}
               STATESU_LOG_JSON: ${{ vars.STATESU_LOG_JSON }}
            run: |
               set -euo pipefail
               # Start empty: GitHub is the single source of truth, so a stale
               # file left behind by a previous manual run never survives.
               : > .env
-              required=(STATESU_EMAIL_KEY STATESU_EMAIL_HMAC_KEY STATESU_RESEND STATESU_PUBLIC_URL)
+              required=(STATESU_EMAIL_KEY STATESU_EMAIL_HMAC_KEY STATESU_MEDIA_KEY STATESU_RESEND STATESU_PUBLIC_URL)
               missing=""
               for name in "${required[@]}"; do
                  if [ -z "${!name:-}" ]; then
@@ -68,12 +78,17 @@ jobs:
               # secrets stay masked in logs by GitHub automatically. Single
               # quotes keep compose's dotenv expansion out of the values.
               names=(
-                 STATESU_EMAIL_KEY STATESU_EMAIL_HMAC_KEY STATESU_RESEND
+                 STATESU_EMAIL_KEY STATESU_EMAIL_HMAC_KEY STATESU_MEDIA_KEY STATESU_RESEND
                  STATESU_MAIL_FROM STATESU_PUBLIC_URL STATESU_ADDR
                  STATESU_ALLOWED_ORIGINS STATESU_TRUSTED_PROXIES
                  STATESU_RATE_LIMIT_RPM STATESU_AUTH_RATE_LIMIT_RPM
                  STATESU_MAX_CONCURRENCY STATESU_ARGON2_CONCURRENCY
                  STATESU_MAX_POSTS_PER_USER STATESU_MAX_TOTAL_CONTENT_BYTES
+                 STATESU_MAX_MEDIA_BYTES STATESU_MAX_TOTAL_MEDIA_BYTES
+                 STATESU_MAX_MEDIA_PER_USER
+                 STATESU_R2_ACCOUNT_ID STATESU_R2_BUCKET STATESU_R2_PREFIX
+                 STATESU_R2_ACCESS_KEY_ID STATESU_R2_SECRET_ACCESS_KEY
+                 STATESU_R2_PUBLIC_BASE_URL
                  STATESU_TURNSTILE_SECRET_KEY STATESU_LOG_JSON
               )
               for name in "${names[@]}"; do

@@ -27,6 +27,10 @@
 	<p><code>/blog/hello-world</code> displays the published post with slug <code>hello-world</code>. Future posts work the same way; no per-post code changes. Use one embed per page.</p>
 	<p>For a fixed announcement on your homepage, add <code>data-post="guncel"</code> to the script. This selects that published post regardless of the page URL; omit it to use URL-based routing.</p>
 	<p>To show only the most recently published announcement, use <code>data-mode="latest"</code> instead. Add <code>data-hide-title</code> to display just its Markdown body, without the post title. Latest mode ignores the page URL and <code>data-post</code>; it shows nothing when there are no published posts.</p>
+	<h3>Media and the v2 embed</h3>
+	<p>Add media images in the dashboard or <a href="/docs/cli">CLI</a>; each upload renders one standard Markdown image tag like <code>![alt](https://media.example.com/statesu/blogs/blogs/…/source.webp)</code>. Served from your own public media domain, the URL is permanent and moves with your Markdown.</p>
+	<p><code>/embed/v2.js</code> keeps v1 semantics and adds visual media handling inside its own shadow DOM: host page styles don't clash, responsive variants load by viewport, images can carry width pins, and a <code>data-lightbox="off"</code> attribute disables click-to-zoom. Linked images are never intercepted; the author's destination always wins.</p>
+	<Terminal code={'<div id="statesu-post"></div>\n<script defer\n  src="https://statesu.com/embed/v2.js"\n  data-blog="writing-desk"\n  data-base-path="/blog"\n  data-target="statesu-post"></script>'} language="html" />
 	<p>For an announcement archive, use <code>data-mode="feed"</code> with <code>data-hide-title</code>. All published entries appear newest first, with a load-more button after 20 entries. Feed mode also ignores the page URL and <code>data-post</code>.</p>
 </section>
 
@@ -48,7 +52,7 @@
 	<h2>Security and rendering</h2>
 	<ul>
 		<li>Published posts are public. CORS limits browser access, not server-side requests. Never publish secrets or expose a personal access token.</li>
-		<li>Markdown is untrusted content. Disable raw HTML or sanitize rendered output; use <code>textContent</code> for titles. The embed uses marked and DOMPurify with a strict allowlist.</li>
+		<li>Markdown is untrusted content. Disable raw HTML or sanitize rendered output; use <code>textContent</code> for titles. The embed uses marked and DOMPurify with a strict allowlist; media images are restricted to http(S) source origins, so hostile data: or javascript: URLs are ignored.</li>
 		<li>The embed renders client-side. For post content in initial HTML and real HTTP 404 responses, render server-side instead.</li>
 		<li>If your site has a Content-Security-Policy, allow your Statesu origin in both <code>script-src</code> and <code>connect-src</code>.</li>
 	</ul>

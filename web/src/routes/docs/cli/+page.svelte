@@ -60,6 +60,9 @@ stscli whoami`;
 	<Terminal code={'stscli post new "Hello world" --slug hello-world\nstscli post list\nstscli post publish hello-world'} />
 	<p>Upload a file or pipe Markdown instead of opening an editor:</p>
 	<Terminal code={'stscli post create "From a file" --file post.md --publish\nprintf \'# Hello\\n\\nFirst post.\\n\' | stscli post create "First post" --publish'} />
+	<h3>Media images</h3>
+	<p>Add images to a blog's storage bucket (Statesu's own, or your own Cloudflare R2 bucket connected in Settings): upload the file and paste the printed Markdown reference into any post. The server validates and re-encodes JPEG/PNG/WebP files, generates responsive sizes, and sets an alt text from the file name when you write your own.</p>
+	<Terminal code={'stscli media upload photo.webp\nstscli media list\nstscli media delete <media id>'} />
 	<p>Ready to show it on your website? Follow the <a href="/docs/integration">web integration guide</a>.</p>
 </section>
 

@@ -2,7 +2,7 @@
 
 Statesu is a small, self-hosted **headless Markdown CMS** with a hard security focus. It ships as:
 
-- a **backend** — a single Rust binary over HTTP: blog & post management, email-verified accounts, sessions and personal access tokens (PATs), public per-blog delivery with per-blog CORS, embedded dashboard/docs SPA;
+- a **backend** — a single Rust binary over HTTP: blog & post management, media images on R2 (server bucket or your own), email-verified accounts, sessions and personal access tokens (PATs), public per-blog delivery with per-blog CORS, embedded dashboard/docs SPA;
 - a **CLI** — `stscli`, a terminal client to write, edit and publish posts without Git or any local post storage: the server is the source of truth.
 
 Backend: Axum + SQLite + UUIDv7, no filesystem dependence beyond one SQLite file. Delivery and management are cleanly separated (`/public/...` vs session/PAT-guarded routes). Frontend: SvelteKit dashboard, embedded into the binary at compile time.
@@ -58,6 +58,8 @@ Copy `.env.example` to `.env`. Explicit environment variables always win over th
 | `STATESU_DB` | `db/statesu.db` | SQLite file. Created on first run; migrations run automatically at startup. A legacy-schema database is detected and refused. |
 | `STATESU_ALLOWED_ORIGINS` | *empty* | Extra browser origins (comma-separated) allowed as dashboard origins for CORS/same-site writes, e.g. the Vite dev URL. Not needed in the recommended single-origin deployment. |
 | `STATESU_TRUSTED_PROXIES` | *empty* | CIDR ranges of proxies you own, comma-separated. Only peers inside these ranges may set `X-Forwarded-For` for rate limiting; everyone else is keyed by direct socket peer. |
+| `STATESU_MEDIA_KEY` | — | AES-256-GCM key encrypting user-supplied R2 access keys at rest. Exactly 32 bytes, base64. Required; use a different value than the email key. |
+| `STATESU_R2_ACCOUNT_ID`, `STATESU_R2_BUCKET`, `STATESU_R2_PREFIX`, `STATESU_R2_ACCESS_KEY_ID`, `STATESU_R2_SECRET_ACCESS_KEY`, `STATESU_R2_PUBLIC_BASE_URL` | *unset* | The server's own R2 bucket used for media on blogs without a custom connection. Set all six together or omit all; a partially set group refuses to boot. Credentials must be an R2 API token scoped to that bucket, never an account key. |
 
 ### Limits (all optional)
 
@@ -69,6 +71,19 @@ Copy `.env.example` to `.env`. Explicit environment variables always win over th
 | `STATESU_ARGON2_CONCURRENCY` | `2` | Parallel Argon2 password-hashing workers; scale roughly to CPU cores. |
 | `STATESU_MAX_POSTS_PER_USER` | `500` | Post cap per user across all their blogs, including drafts and soft-deleted rows. |
 | `STATESU_MAX_TOTAL_CONTENT_BYTES` | `33554432` (32 MiB) | Hard cap on stored Markdown bytes per user. |
+| `STATESU_MAX_MEDIA_BYTES` | `10485760` (10 MiB) | Hard cap on a single uploaded media file. |
+| `STATESU_MAX_TOTAL_MEDIA_BYTES` | `268435456` (256 MiB) | Hard cap on stored media bytes per user, including generated variants. |
+| `STATESU_MAX_MEDIA_PER_USER` | `1000` | Media record cap per user across all their blogs. |
+
+Additional abuse limits use rolling windows, independently of the storage quota:
+
+- Registration: **3 attempts/hour and 10/day per IP**.
+- Media uploads: **20 attempts/minute and 200/day per IP**, plus **10/minute and 100/day per user**.
+- Upload limits run before buffering the body. Failed uploads count; deleting files or changing blogs, sessions or PATs does not refund the budget.
+- IPv6 addresses share a `/64` budget. Only configured trusted proxies may supply the client IP; configure this correctly behind a reverse proxy.
+- Exhaustion returns `429` with `Retry-After`. Counters are bounded and process-local: a restart resets them, and multiple replicas do not share them. Shared-IP users also share the IP budget.
+
+Enable Turnstile for public registration: rate limits alone cannot distinguish an attacker rotating both IPs and verified accounts.
 
 ### Human verification & logging
 
@@ -188,6 +203,10 @@ stscli post edit first-post     # updates body only; keeps status
 stscli post publish first-post
 stscli post unpublish first-post
 stscli post delete first-post   # confirmation prompt; --yes to skip
+
+stscli media upload photo.jpg   # prints a ready Markdown reference
+stscli media list [--page 1 --size 20]
+stscli media delete <id|url>    # id or pasted public URL; --yes to skip
 ```
 
 Some semantics worth knowing:
@@ -198,6 +217,7 @@ Some semantics worth knowing:
 - Slugs are derived from titles (ASCII-fold, Turkish İ/ı/ş/ğ included); the server accepts only `a-z 0-9 -` up to 63 chars. Pass `--slug` when derivation fails.
 - The default server is `https://statesu.com`. Self-hosted deployments use `--server https://your-host` or `STATESU_SERVER`; a server saved by login is reused. Precedence: flag → environment → saved server → hosted default.
 - Every command takes `--blog <id|slug>` to act on another blog without changing the selection; blog/post slug targets are resolved by scanning listings once per call.
+- Media uploads accept JPEG, PNG and WebP files (server-side validation and re-encoding; no animated images). `media upload` prints the `![alt](url)` reference for the last cursor position; `media delete` accepts the media id **or** a pasted public URL. Storage secrets never travel in media output; `stscli media` requires a write PAT and only the dashboard can manage R2 credentials.
 
 ### Automation
 
@@ -237,7 +257,11 @@ POST       /auth/cli/revoke          (revoke only the presented PAT)
 POST/GET   /blogs                    PATCH/DELETE /blogs/{blog_id}
 PUT        /blogs/{blog_id}/origins  POST/GET /blogs/{blog_id}/posts
 GET/PATCH/DELETE /blogs/{blog_id}/posts/{post_id}
+POST/GET   /blogs/{blog_id}/media    DELETE /blogs/{blog_id}/media/{media_id}
+GET/POST   /blogs/{blog_id}/storage-connections
+PUT        /blogs/{blog_id}/media-storage
 ```
+(blog-scoped storage configuration routes are session-only; media upload/list/delete is also available to write PATs for CLI parity)
 
 Public delivery (unauthenticated reads, per-blog CORS allowlist):
 
@@ -247,7 +271,7 @@ GET /public/blogs/{blog_slug}/posts            (?page=&size=)
 GET /public/blogs/{blog_slug}/posts/{post_slug}
 ```
 
-Errors are always `{"error": "<stable message>"}` with the status assigned by the domain. Rate-limited responses carry `Retry-After`.
+Public post payloads add a `media` array with the canonical URLs and responsive variants for referenced uploads; the Markdown itself is untouched. Errors are always `{"error": "<stable message>"}` with the status assigned by the domain. Rate-limited responses carry `Retry-After`.
 
 ## Project layout
 
