@@ -12,17 +12,21 @@
 // ignored; invalid post URLs fail without touching the API. Only the target
 // element's content is changed. The same deadline covers headers and body.
 
-import { parseBasePath, resolveSlug, SLUG_PATTERN, MAX_SLUG_LENGTH } from './url.js';
+import { parseBasePath, resolveSlug, SLUG_PATTERN } from './url.js';
 import { parseApiOrigin, apiUrl } from './api.js';
 import { buildRenderer } from './content.js';
+import {
+	DEFAULT_TARGET_ID,
+	describeFetchFailure,
+	element,
+	fetchPostJson,
+	renderPost,
+	showState,
+	validBlogSlug
+} from './common.js';
 
-const DEFAULT_TARGET_ID = 'statesu-post';
 const FETCH_TIMEOUT_MS = 12_000;
 const LIBRARY_VERSION = 'v1';
-
-export function validBlogSlug(blog) {
-	return typeof blog === 'string' && blog.length <= MAX_SLUG_LENGTH && SLUG_PATTERN.test(blog);
-}
 
 function stylesFor(prefix) {
 	return `.${prefix} { color: inherit; font-family: inherit; }
@@ -41,88 +45,6 @@ function injectStyles(document) {
 	style.textContent = stylesFor('statesu-embed');
 	style.dataset.statesu = LIBRARY_VERSION;
 	document.head.appendChild(style);
-}
-
-function element(document, tag, className, text) {
-	const node = document.createElement(tag);
-	if (className) node.className = className;
-	if (text !== undefined) node.textContent = text;
-	return node;
-}
-
-/// States render inside the retained root so the host element keeps one
-/// stable child for its whole life. `root` must stay attached to the page.
-function showState(root, message, isError) {
-	root.textContent = '';
-	const node = element(root.ownerDocument, 'p', isError ? 'statesu-error' : 'statesu-state', message);
-	node.setAttribute('role', isError ? 'alert' : 'status');
-	if (!isError) node.setAttribute('aria-live', 'polite');
-	root.appendChild(node);
-}
-
-/**
- * Fetches and fully parses a post under one deadline that covers headers and
- * body reads. When the deadline fires the request is actually cancelled:
- * the controller is aborted and the signal rides on the fetch, so a slow or
- * stuck host cannot keep downloading in the background.
- * Returns `{ post }` on success or `{ error: { kind, status? } }`.
- */
-async function fetchPostJson(fetch, api, signalTimeoutMs) {
-	const controller = new AbortController();
-	let timedOut = false;
-	let timer;
-	const deadline = new Promise((_, reject) => {
-		timer = setTimeout(() => {
-			timedOut = true;
-			controller.abort();
-			reject(new DOMException('timeout', 'AbortError'));
-		}, signalTimeoutMs);
-	});
-	try {
-		const response = await Promise.race([
-			fetch(api, {
-				method: 'GET',
-				credentials: 'omit',
-				headers: { Accept: 'application/json' },
-				redirect: 'error',
-				signal: controller.signal
-			}),
-			deadline
-		]);
-		if (response.status === 0 || response.type === 'opaqueredirect') {
-			return { error: { kind: 'network' } };
-		}
-		if (!response.ok) {
-			return { error: { kind: 'http', status: response.status } };
-		}
-		const post = await Promise.race([response.json(), deadline]);
-		return { post };
-	} catch (error) {
-		if (timedOut || error?.name === 'AbortError') {
-			return { error: { kind: 'timeout' } };
-		}
-		const kind = error?.name === 'SyntaxError' ? 'bad-response' : 'network';
-		return { error: { kind } };
-	} finally {
-		clearTimeout(timer);
-	}
-}
-
-// Every embed mode shares the same safe Markdown pipeline.
-function renderPost(window, parent, post, render, hideTitle) {
-	const document = window.document;
-	if (!hideTitle) {
-		const heading = element(document, 'h2', 'statesu-title', post.title);
-		parent.appendChild(heading);
-	}
-	const body = element(document, render === null ? 'pre' : 'div',
-		render === null ? 'statesu-embed-fallback statesu-body' : 'statesu-body');
-	if (render === null) {
-		body.textContent = post.content_markdown;
-	} else {
-		body.innerHTML = render(post.content_markdown);
-	}
-	parent.appendChild(body);
 }
 
 function initFeed(window, root, origin, blog, hideTitle, timeoutMs) {
@@ -292,21 +214,8 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 		.then((result) => {
 			if (result.error) {
 				const { kind, status } = result.error;
-				if (kind === 'timeout') {
-					showState(root, 'The content API did not answer in time. Try again.', true);
-				} else if (kind === 'http' && status === 404) {
-					showState(root, 'No published post at this address.', false);
-				} else if (kind === 'http') {
-					showState(root, `The content API returned ${status}.`, true);
-				} else if (kind === 'bad-response') {
-					showState(root, 'The content API returned an unparsable response.', true);
-				} else {
-					showState(
-						root,
-						'The content API could not be reached. If this runs in a browser, the site origin must be allowed for this blog.',
-						true
-					);
-				}
+				const friendly = kind === 'http' && status === 404;
+				showState(root, describeFetchFailure(result.error), !friendly);
 				return;
 			}
 			if (isLatest && !Array.isArray(result.post?.items)) {

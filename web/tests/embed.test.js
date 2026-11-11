@@ -216,3 +216,106 @@ test('DOMPurify always strips dangerous output even for pathological input', () 
 		assert.equal(doc.querySelector('script'), null, 'script must never appear');
 	}
 });
+
+// -------------------------------------------------------------------------
+// Media renderer (embed v2 + dashboard preview shared module)
+// -------------------------------------------------------------------------
+
+const { renderImageMarkup, buildMediaRenderer } = await import('../src/embed/media-renderer.js');
+// Ad-hoc metadata entry keyed by absolute URL, matching public metadata.
+const MEDIA_META = new Map([
+	['https://media.example/statesu/blogs/bb/media/source.webp', {
+		id: 'm1',
+		source_url: 'https://media.example/statesu/blogs/bb/media/source.webp',
+		source_width: 1600,
+		source_height: 900,
+		variants: [
+			{ label: 'w640', url: 'https://media.example/statesu/blogs/bb/media/w640.webp', width: 640, height: 360 },
+			{ label: 'w1280', url: 'https://media.example/statesu/blogs/bb/media/w1280.webp', width: 1280, height: 720 }
+		]
+	}]
+]);
+
+const mediaRender = buildMediaRenderer(globalThis.window, MEDIA_META);
+assert.ok(mediaRender, 'media renderer should be available under jsdom');
+
+test('standard images render with alt and lazy loading', () => {
+	const html = mediaRender(`![Sınıf fotoğrafı](https://media.example/statesu/blogs/bb/media/source.webp)`);
+	const doc = new JSDOM(`<body>${html}</body>`).window.document;
+	const img = doc.querySelector('img');
+	assert.ok(img, 'standard image expected');
+	assert.equal(img.getAttribute('alt'), 'Sınıf fotoğrafı');
+	assert.equal(img.getAttribute('loading'), 'lazy');
+	assert.equal(img.getAttribute('src'), 'https://media.example/statesu/blogs/bb/media/source.webp');
+	// Known metadata builds the trusted srcset for its variants.
+	const srcset = img.getAttribute('srcset') ?? '';
+	assert.match(srcset, /w640\.webp 640w/);
+	assert.match(srcset, /w1280\.webp 1280w/);
+});
+
+test('width pins stay bounded and update the chosen size metadata', () => {
+	const html = mediaRender(`![retina media](https://media.example/statesu/blogs/bb/media/source.webp){width=640}`);
+	const doc = new JSDOM(`<body>${html}</body>`).window.document;
+	const img = doc.querySelector('img');
+	assert.equal(img.getAttribute('width'), '640');
+	assert.equal(img.getAttribute('sizes'), '(max-width: 640px) 100vw, min(640px, 100vw)');
+	// Metadata builds the trusted srcset.
+	const srcset = img.getAttribute('srcset') ?? '';
+	assert.match(srcset, /w640\.webp 640w/);
+	assert.match(srcset, /w1280\.webp 1280w/);
+});
+
+test('the reserved width suffix is parsed only when shaped form', () => {
+	const html = mediaRender(
+		`![alt](https://media.example/statesu/blogs/bb/media/source.webp){width=0} and ![plain](https://media.example/statesu/blogs/bb/media/source.webp)`
+	);
+	const doc = new JSDOM(`<body>${html}</body>`).window.document;
+	const imgs = [...doc.querySelectorAll('img')];
+	assert.equal(imgs.length, 2);
+	// {width=0} violates the pin: the metadata source width is used
+	// instead, and the suffix text itself never leaks as content.
+	assert.equal(imgs[0].getAttribute('width'), '1600');
+	assert.equal(imgs[1].getAttribute('width'), '1600');
+	assert.equal(doc.body.textContent.trim(), 'and');
+});
+
+test('javascript: urls are stripped from images and links', () => {
+	const html = mediaRender(
+		`[merhaba](javascript:alert(1)) and ![x](javascript:alert(2))`
+	);
+	const doc = new JSDOM(`<body>${html}</body>`).window.document;
+	assert.equal(doc.querySelector('img'), null);
+	assert.equal(doc.querySelector('a'), null);
+	assert.match(doc.body.textContent, /merhaba/);
+	assert.match(doc.body.textContent, /x/);
+});
+
+test('raw html still never renders', () => {
+	const html = mediaRender(`![alt](https://media.example/statesu/blogs/bb/media/source.webp) <b>bold</b> <img src="x" onerror="alert(1)">`);
+	const doc = new JSDOM(`<body>${html}</body>`).window.document;
+	assert.equal(doc.querySelector('b'), null, 'raw html must not render');
+	// The tokenizer-parsed image stays, the stray img is dropped.
+	assert.equal(doc.querySelectorAll('img').length, 1);
+	assert.equal(doc.querySelectorAll('img')[0].getAttribute('src'), 'https://media.example/statesu/blogs/bb/media/source.webp');
+});
+
+test('linked images keep the link, lightbox must fight for it', () => {
+	const html = mediaRender(`[![alt](https://media.example/statesu/blogs/bb/media/source.webp)](https://example.com)`);
+	const doc = new JSDOM(`<body>${html}</body>`).window.document;
+	const anchor = doc.querySelector('a');
+	assert.ok(anchor, 'the author link must survive');
+	assert.equal(anchor.getAttribute('href'), 'https://example.com');
+	assert.equal(anchor.getAttribute('target'), '_blank');
+	assert.equal(anchor.getAttribute('rel'), 'noopener noreferrer');
+	assert.ok(anchor.querySelector('img'), 'the image rides inside the link');
+});
+
+test('renderImageMarkup keeps plain words when hrefs are unsafe', () => {
+	const output = renderImageMarkup(globalThis.window, MEDIA_META, {
+		text: 'kelimeler kalsın',
+		href: 'javascript:alert(9)',
+		title: 'hiçbir şey',
+		width: undefined
+	});
+	assert.equal(output, 'kelimeler kalsın');
+});

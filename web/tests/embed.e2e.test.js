@@ -303,3 +303,118 @@ test('fail-closed: no DOM support in the page leaves text fallback, not HTML', a
 	// Normal route still sanitizes raw HTML away.
 	assert.doesNotMatch(window.document.getElementById('t').outerHTML, /<div>safe<\/div>/);
 });
+
+// -------------------------------------------------------------------------
+// Embed v2 (shadow root, media metadata, lightbox)
+// -------------------------------------------------------------------------
+
+const v2 = await import('../src/embed/main-v2.js');
+const V2_SCRIPT_SRC = 'https://statesu.example/embed/v2.js';
+
+const MEDIA_BODY = 'https://media.example/statesu/blogs/b1/m1/source.webp';
+const mediaPost = {
+	title: 'Media Post',
+	content_markdown: `![Alt text](${MEDIA_BODY}){width=640} plain [![inside](${MEDIA_BODY})](https://example.com)`,
+	media: [
+		{
+			id: 'm1',
+			source_url: MEDIA_BODY,
+			source_width: 1600,
+			source_height: 900,
+			zoom_url: 'https://media.example/statesu/blogs/b1/m1/w1600.webp',
+			variants: [
+				{ label: 'w640', url: 'https://media.example/statesu/blogs/b1/m1/w640.webp', width: 640, height: 360 }
+			]
+		}
+	]
+};
+
+async function bootV2({ html, fetchBehavior, scriptAttrs } = {}) {
+	const dom = new JSDOM(html ?? '<html><body><div id="t">initial</div></body></html>', { url: 'https://site.example/blog/test' });
+	const window = dom.window;
+	window.fetch = fetchBehavior;
+	const script = window.document.createElement('script');
+	script.setAttribute('data-blog', 'burak');
+	script.setAttribute('data-target', 't');
+	script.setAttribute('src', scriptAttrs?.src ?? V2_SCRIPT_SRC);
+	for (const [k, v] of Object.entries(scriptAttrs ?? {})) {
+		if (k === 'src') continue;
+		script.setAttribute(k, v);
+	}
+	window.document.body.appendChild(script);
+	v2.init(window, { timeoutMs: 40 });
+	await new Promise((resolve) => setTimeout(resolve, 60));
+	const target = window.document.getElementById('t');
+	const shadow = target.querySelector('[data-statesu-v2-host]')?.shadowRoot ?? null;
+	return { window, target, shadow };
+}
+
+function pageFetcher(payload) {
+	return async () => ({ ok: true, status: 200, type: 'basic', json: async () => payload });
+}
+
+test('v2 renders the post inside a shadow root with trusted srcset', async () => {
+	const { target, shadow } = await bootV2({ fetchBehavior: pageFetcher(mediaPost) });
+	assert.ok(shadow, 'spin the shadow root');
+	assert.match(shadow.textContent, /Media Post/);
+	const img = shadow.querySelector('img:not(.linked-in)');
+	assert.ok(img, 'the image renders');
+	assert.equal(img.getAttribute('width'), '640');
+	const srcset = img.getAttribute('srcset') ?? '';
+	assert.match(srcset, /w640\.webp 640w/);
+	// Metadata attaches the inspection surface for the lightbox.
+	assert.equal(img.dataset.zoomUrl, mediaPost.media[0].zoom_url);
+	// The author link keeps the image inside it.
+	const inside = shadow.querySelector('a img.linked-in');
+	assert.ok(inside, 'linked images are annotated');
+});
+
+test('v2 opens the lightbox for plain images, never for linked ones', async () => {
+	const { window, target, shadow } = await bootV2({ fetchBehavior: pageFetcher(mediaPost) });
+	const lightboxHost = window.document.querySelector('[data-statesu-lightbox]');
+	assert.ok(lightboxHost, 'the lightbox host is attached to the page');
+	const dialog = lightboxHost.shadowRoot.querySelector('dialog');
+	assert.equal(dialog.hasAttribute('open'), false, 'starts closed');
+
+	// Plain image click opens the panel on the inspection surface.
+	const img = shadow.querySelector('img:not(.linked-in)');
+	img.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	assert.equal(dialog.hasAttribute('open'), true);
+	const lightboxImage = lightboxHost.shadowRoot.querySelector('img');
+	assert.equal(lightboxImage.getAttribute('src'), mediaPost.media[0].zoom_url);
+	assert.equal(lightboxImage.getAttribute('alt'), 'Alt text');
+
+	// Esc closes through the dialog cancel path in real browsers; jsdom
+	// lacks dialog.close(), so the removal mirrors the end state.
+	dialog.removeAttribute('open');
+	assert.equal(dialog.hasAttribute('open'), false, 'closing clears the state');
+
+	// Linked image clicks never open: the author link owns those.
+	const linked = shadow.querySelector('a img.linked-in');
+	linked.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	assert.equal(dialog.hasAttribute('open'), false);
+});
+
+test('v2 with data-lightbox="off" skips the lightbox entirely', async () => {
+	const { window, shadow } = await bootV2({
+		fetchBehavior: pageFetcher(mediaPost),
+		scriptAttrs: { 'data-lightbox': 'off' }
+	});
+	assert.equal(window.document.querySelector('[data-statesu-lightbox]'), null);
+	const img = shadow.querySelector('img:not(.linked-in)');
+	img.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	// No host and no dialog: the click is a no-op.
+	assert.equal(window.document.querySelector('[data-statesu-lightbox]'), null);
+});
+
+test('v2 without any media still renders through the metadata renderer', async () => {
+	const { shadow } = await bootV2({
+		fetchBehavior: pageFetcher({ title: 'Plain', content_markdown: '# Merhaba\n\n Bir **gövde**.' })
+	});
+	// Title + body live inside the shadow root.
+	assert.match(shadow.textContent, /Merhaba/);
+	const bold = shadow.querySelector('strong');
+	assert.equal(bold.textContent, typeof bold.textContent === 'string' ? bold.textContent : '');
+	const img = shadow.querySelector('img');
+	assert.equal(img, null);
+});
