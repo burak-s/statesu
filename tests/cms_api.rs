@@ -479,7 +479,7 @@ async fn embed_appearance_numeric_bounds_and_wire_types_match_the_validator() {
             json!({
                 "embed_appearance": {
                     "version": 1,
-                    group.clone(): { key.clone(): value }
+                    group: { key: value }
                 }
             })
         };
