@@ -9,8 +9,6 @@ pub struct UserRepository {
     pool: SqlitePool,
 }
 
-const COLUMNS: &str = "id, email_ciphertext, email_hash, password_hash, email_verified_at";
-
 impl UserRepository {
     pub fn new(pool: SqlitePool) -> UserRepository {
         UserRepository { pool }
@@ -52,7 +50,7 @@ impl UserRepository {
 
     pub async fn find_by_id(&self, user_id: &uuid::Uuid) -> Result<Option<UserRecord>, Error> {
         let row =
-            sqlx::query_as::<_, UserRow>(&format!("SELECT {COLUMNS} FROM users WHERE id = ?"))
+            sqlx::query_as::<_, UserRow>("SELECT id, email_ciphertext, email_hash, password_hash, email_verified_at FROM users WHERE id = ?")
                 .bind(user_id.to_string())
                 .fetch_optional(&self.pool)
                 .await
@@ -61,9 +59,7 @@ impl UserRepository {
     }
 
     pub async fn find_by_email_hash(&self, email_hash: &[u8]) -> Result<Option<UserRecord>, Error> {
-        let row = sqlx::query_as::<_, UserRow>(&format!(
-            "SELECT {COLUMNS} FROM users WHERE email_hash = ?"
-        ))
+        let row = sqlx::query_as::<_, UserRow>("SELECT id, email_ciphertext, email_hash, password_hash, email_verified_at FROM users WHERE email_hash = ?")
         .bind(email_hash)
         .fetch_optional(&self.pool)
         .await

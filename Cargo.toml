@@ -24,7 +24,8 @@ http-body-util = "0.1"
 sha2 = "0.10"
 hmac = "0.12"
 http = "1"
-sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
+# Pin upstream until a SQLx release supports the patched SQLite bindings (RUSTSEC-2026-0459).
+sqlx = { git = "https://github.com/launchbadge/sqlx.git", rev = "987b8c5a74b6da8b71da6b5549925a7f6e59aac9", default-features = false, features = ["runtime-tokio", "sqlite", "macros", "migrate"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 rust-embed = "8"

@@ -201,8 +201,10 @@ impl MediaRepository {
                 "SELECT m.id, m.mime, m.width, m.height, m.public_base_url \
                  FROM media m WHERE m.blog_id = ? AND m.status = 'ready' AND m.id IN ({placeholders})"
             );
+            // Only generated `?` placeholders are interpolated; all values are bound.
             let mut query =
-                sqlx::query_as::<_, RawPublicMediaSource>(sql.as_str()).bind(blog_id.to_string());
+                sqlx::query_as::<_, RawPublicMediaSource>(sqlx::AssertSqlSafe(sql.as_str()))
+                    .bind(blog_id.to_string());
             for id in chunk {
                 query = query.bind(id.to_string());
             }
@@ -235,7 +237,8 @@ impl MediaRepository {
                 "SELECT media_id, label, object_key, mime, width, height, bytes \
                  FROM media_variants WHERE media_id IN ({placeholders}) ORDER BY label"
             );
-            let mut query = sqlx::query_as::<_, RawVariantRow>(sql.as_str());
+            // Only generated `?` placeholders are interpolated; all values are bound.
+            let mut query = sqlx::query_as::<_, RawVariantRow>(sqlx::AssertSqlSafe(sql.as_str()));
             for id in chunk {
                 query = query.bind(id.to_string());
             }

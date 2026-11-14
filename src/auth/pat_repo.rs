@@ -10,8 +10,6 @@ pub struct PatRepository {
     pool: SqlitePool,
 }
 
-const PAT_METADATA_COLUMNS: &str = "id, name, scopes, created_at, expires_at, last_used_at";
-
 /// Everything a new PAT row needs except its (already hashed) secret.
 pub struct NewPat {
     pub id: uuid::Uuid,
@@ -102,7 +100,7 @@ impl PatRepository {
 
     pub async fn list_for_user(&self, user_id: &uuid::Uuid) -> Result<Vec<PatRecord>, Error> {
         sqlx::query_as::<_, PatRow>(
-            &format!("SELECT {PAT_METADATA_COLUMNS} FROM pats WHERE user_id = ? ORDER BY created_at DESC, id DESC"),
+            "SELECT id, name, scopes, created_at, expires_at, last_used_at FROM pats WHERE user_id = ? ORDER BY created_at DESC, id DESC",
         )
         .bind(user_id.to_string())
         .fetch_all(&self.pool)
@@ -116,9 +114,7 @@ impl PatRepository {
         pat_id: &uuid::Uuid,
         user_id: &uuid::Uuid,
     ) -> Result<Option<PatRecord>, Error> {
-        sqlx::query_as::<_, PatRow>(&format!(
-            "SELECT {PAT_METADATA_COLUMNS} FROM pats WHERE id = ? AND user_id = ?"
-        ))
+        sqlx::query_as::<_, PatRow>("SELECT id, name, scopes, created_at, expires_at, last_used_at FROM pats WHERE id = ? AND user_id = ?")
         .bind(pat_id.to_string())
         .bind(user_id.to_string())
         .fetch_optional(&self.pool)
