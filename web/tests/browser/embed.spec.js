@@ -203,6 +203,49 @@ test('real bundle resolves deep links, refresh, future posts and the root prefix
 	}
 });
 
+test('saved appearance styles the v2 embed while v1 and host overrides keep their rules', async ({ page, request, account }) => {
+	await createPost(request, account, 'styled', {
+		status: 'published',
+		content_markdown: 'Text with a [link](https://example.com) inside.'
+	});
+	await json(await request.put(`${API}/blogs/${account.blog.id}/appearance`, {
+		headers: account.headers,
+		data: {
+			embed_appearance: {
+				version: 1,
+				colors: { text: '#123456', link: '#ff0000' },
+				typography: { font: 'serif' }
+			}
+		}
+	}));
+
+	// The saved appearance applies inside the shadow root.
+	await page.goto(postUrl(account, 'styled', { v: '2' }));
+	const title = page.locator('.statesu-title');
+	await expect(title).toHaveText('Post styled');
+	await expect.poll(() => title.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(18, 52, 86)');
+	const link = page.locator('.statesu-body a');
+	await expect(link).toHaveText('link');
+	await expect.poll(() => link.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(255, 0, 0)');
+	const fontFamily = await title.evaluate((el) => getComputedStyle(el).fontFamily);
+	expect(fontFamily).toContain('Georgia');
+
+	// Documented host-page overrides beat the saved appearance.
+	await page.goto(postUrl(account, 'styled', {
+		v: '2',
+		style: '#statesu-post { --statesu-link-color: #00ff00; }'
+	}));
+	const overridden = page.locator('.statesu-body a');
+	await expect(overridden).toHaveText('link');
+	await expect.poll(() => overridden.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(0, 255, 0)');
+
+	// v1 embeds ignore the appearance: their look stays host-page-driven.
+	await page.goto(postUrl(account, 'styled'));
+	const v1Title = page.locator('.statesu-title');
+	await expect(v1Title).toHaveText('Post styled');
+	await expect.poll(() => v1Title.evaluate((el) => getComputedStyle(el).color)).not.toBe('rgb(18, 52, 86)');
+});
+
 test('authenticated stored XSS stays inert through update, publish, dashboard and embed', async ({ page, context, request, account }) => {
 	const dialogs = [];
 	const trackers = [];
@@ -302,7 +345,7 @@ test('dashboard keeps invalid inputs editable, gates copying and adds origins on
 	await expect(copy).toBeEnabled();
 	await page.getByText('Copyable integration code', { exact: true }).click();
 	const snippet = page.locator('.details-body pre code');
-	await expect(snippet).toContainText(`src="${API}/embed/v1.js"`);
+	await expect(snippet).toContainText(`src="${API}/embed/v2.js"`);
 	await expect(snippet).toContainText('data-base-path="/"');
 	await expect(snippet).toContainText(`data-blog="${account.blog.slug}"`);
 	await context.grantPermissions(['clipboard-read', 'clipboard-write']);

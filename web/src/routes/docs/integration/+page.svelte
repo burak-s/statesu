@@ -1,5 +1,23 @@
 <script>
 	import Terminal from '#lib/components/Terminal.svelte';
+
+	const overrides = `/* The website always wins over the saved appearance. */
+#statesu-post {
+  --statesu-text-color: #171717;
+  --statesu-background-color: #ffffff;
+  --statesu-link-color: #7c3aed;
+  --statesu-muted-color: #6e6e6e;
+  --statesu-border-color: #dddddd;
+  --statesu-font-family: Georgia, serif;
+  --statesu-body-size: 1.05rem;
+  --statesu-heading-size: 1.7em;
+  --statesu-line-height: 1.75;
+  --statesu-max-width: 720px;
+  --statesu-padding: 24px;
+  --statesu-spacing: 16px;
+  --statesu-border-width: 1px;
+  --statesu-corner-radius: 12px;
+}`;
 </script>
 
 <svelte:head>
@@ -29,9 +47,21 @@
 	<p>To show only the most recently published announcement, use <code>data-mode="latest"</code> instead. Add <code>data-hide-title</code> to display just its Markdown body, without the post title. Latest mode ignores the page URL and <code>data-post</code>; it shows nothing when there are no published posts.</p>
 	<h3>Media and the v2 embed</h3>
 	<p>Add media images in the dashboard or <a href="/docs/cli">CLI</a>; each upload renders one standard Markdown image tag like <code>![alt](https://media.example.com/statesu/blogs/blogs/…/source.webp)</code>. Served from your own public media domain, the URL is permanent and moves with your Markdown.</p>
-	<p><code>/embed/v2.js</code> keeps v1 semantics and adds visual media handling inside its own shadow DOM: host page styles don't clash, responsive variants load by viewport, images can carry width pins, and a <code>data-lightbox="off"</code> attribute disables click-to-zoom. Linked images are never intercepted; the author's destination always wins.</p>
+	<p><code>/embed/v2.js</code> keeps v1 semantics and adds visual media handling inside its own shadow DOM: host page styles don't clash, responsive variants load by viewport, images can carry width pins, and a <code>data-lightbox="off"</code> attribute disables click-to-zoom. Linked images are never intercepted; the author's destination always wins. v2 is recommended for new setups — it is also the embed that applies your saved appearance.</p>
 	<Terminal code={'<div id="statesu-post"></div>\n<script defer\n  src="https://statesu.com/embed/v2.js"\n  data-blog="writing-desk"\n  data-base-path="/blog"\n  data-target="statesu-post"></script>'} language="html" />
 	<p>For an announcement archive, use <code>data-mode="feed"</code> with <code>data-hide-title</code>. All published entries appear newest first, with a load-more button after 20 entries. Feed mode also ignores the page URL and <code>data-post</code>.</p>
+</section>
+
+<section>
+	<h2>Style your embeds once</h2>
+	<p>In the dashboard, open your blog's settings and use <strong>Embed appearance</strong>: pick a preset, adjust colors, typography, layout and decoration against a live preview, and save. The saved appearance is stored per blog and applied by every <code>/embed/v2.js</code> installation automatically — visitors' snippets never change, and your next save shows up on their next page load.</p>
+	<p>The controls are typed style tokens, not free-form CSS: colors accept <code>#rgb</code>, <code>#rrggbb</code> or (for the background) <code>transparent</code>; sizes are percentages of the built-in value; layout and decoration are pixels with documented bounds. Anything unset keeps the built-in look, and values that fail validation are rejected at save time.</p>
+	<h3>Developer overrides</h3>
+	<p>A website can still steer individual tokens with CSS custom properties on the embed target, without touching the shadow tree:</p>
+	<Terminal code={overrides} language="css" />
+	<p>Precedence, strongest first: the website's CSS → the blog's saved appearance → the built-in defaults. Every token has a variable, so an embed can blend into any site while still following the owner's branding.</p>
+	<h3>v1 embeds</h3>
+	<p><code>/embed/v1.js</code> keeps serving pages unchanged and does not apply the saved appearance — its look is styled by the host page directly. Switch the script URL to <code>/embed/v2.js</code> to receive saved styling; the rest of the snippet stays the same.</p>
 </section>
 
 <section>

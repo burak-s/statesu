@@ -52,12 +52,19 @@ const host = createServer(async (request, response) => {
 	const blog = escape(url.searchParams.get('blog') ?? 'browser');
 	const base = escape(url.searchParams.get('base') ?? '/blog');
 	const targetId = escape(url.searchParams.get('target') ?? 'statesu-post');
+	const version = url.searchParams.get('v') === '2' ? 'v2' : 'v1';
+	// `style` injects host-page CSS, e.g. to prove the documented CSS
+	// variable overrides win over the saved appearance.
+	const hostStyle = url.searchParams.get('style')
+		? `<style>${escape(url.searchParams.get('style'))}</style>`
+		: '';
 	response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
 	response.end(`<!doctype html><html><head><meta charset="utf-8"><title>Consumer site</title></head>
 <body><header id="host-header"><a href="/outside">Host navigation</a></header>
 <div id="statesu-post">Host placeholder</div><footer id="host-footer">Host footer</footer>
+${hostStyle}
 ${url.searchParams.has('unsupported') ? '<script>DOMImplementation.prototype.createHTMLDocument = undefined;</script>' : ''}
-<script defer src="${api}/embed/v1.js" data-blog="${blog}" data-base-path="${base}" data-target="${targetId}"></script>
+<script defer src="${api}/embed/${version}.js" data-blog="${blog}" data-base-path="${base}" data-target="${targetId}"></script>
 </body></html>`);
 });
 

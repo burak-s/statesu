@@ -6,6 +6,7 @@
 		['POST', '/blogs', 'Create a blog: name, slug, optional domain.'],
 		['PATCH', '/blogs/{blogID}', 'Rename a blog or update its domain.'],
 		['PUT', '/blogs/{blogID}/origins', 'Replace allowed browser origins.'],
+		['PUT', '/blogs/{blogID}/appearance', 'Replace the saved embed appearance; null clears it.'],
 		['GET', '/blogs/{blogID}/posts', 'List your posts, including drafts.'],
 		['POST', '/blogs/{blogID}/posts', 'Create a post: slug, title, content_markdown, optional status.'],
 		['GET', '/blogs/{blogID}/posts/{postID}', 'Read a post.'],
@@ -18,7 +19,7 @@
 		['PUT', '/blogs/{blogID}/media-storage', 'Choose where new media uploads go.']
 	];
 	const publicEndpoints = [
-		['/public/blogs/{blogSlug}', 'Blog profile.'],
+		['/public/blogs/{blogSlug}', 'Blog profile, including the saved embed appearance when set.'],
 		['/public/blogs/{blogSlug}/posts', 'Published posts, newest first.'],
 		['/public/blogs/{blogSlug}/posts/{postSlug}', 'One published post with Markdown.']
 	];
@@ -83,6 +84,7 @@ curl --fail-with-body -sS "$API/blogs/BLOG_ID/media" \
 		</table>
 	</div>
 	<p>Set origins with <code>{'{"origins":["https://example.com"]}'}</code>. The request replaces the entire list. See <a href="/docs/integration">web integration</a> for CORS and hosting setup.</p>
+	<p>Set the embed appearance with <code>{'{"embed_appearance":{"version":1,…}}'}</code> — the full document replaces whatever was saved, and an explicit <code>{'{"embed_appearance":null}'}</code> clears it. Values are validated tokens, never CSS text; the shape and bounds are documented in the <a href="/docs/integration">web integration guide</a>. Blog responses include the saved appearance as <code>embed_appearance</code> when one is set.</p>
 </section>
 
 <section>
@@ -108,7 +110,7 @@ curl --fail-with-body -sS "$API/blogs/BLOG_ID/media" \
 		</table>
 	</div>
 	<Terminal code={'curl --fail-with-body -sS \\\n  https://statesu.com/public/blogs/writing-desk/posts/hello-world'} />
-	<p>Browser reads require an allowed origin; server-side requests do not. Treat returned Markdown as untrusted and sanitize it when rendering. When a post references uploaded media, the response gains a <code>media</code> array with the canonical source URL, source dimensions and responsive variants — extra data, the Markdown itself is unchanged.</p>
+	<p>Browser reads require an allowed origin; server-side requests do not. Treat returned Markdown as untrusted and sanitize it when rendering. When a post references uploaded media, the response gains a <code>media</code> array with the canonical source URL, source dimensions and responsive variants — extra data, the Markdown itself is unchanged. The blog profile response likewise gains <code>embed_appearance</code> while one is saved; it is the same document the v2 embed applies.</p>
 </section>
 
 <section>
