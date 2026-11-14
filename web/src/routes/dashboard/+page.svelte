@@ -4,6 +4,7 @@
 	import { buildMediaRenderer } from '../../embed/media-renderer.js';
 	import { removeMediaImages } from '#lib/media.js';
 	import Turnstile from '#lib/components/Turnstile.svelte';
+	import EmbedAppearance from '#lib/components/EmbedAppearance.svelte';
 
 	// The Turnstile site key is baked in at build time (web/.env.example);
 	// an empty key keeps the credential forms widget-free.
@@ -88,10 +89,12 @@
 	let integrationPathValid = $derived(validateIntegrationPath(integrationPath.trim()));
 	let integrationSnippet = $derived.by(() => {
 		if (!selectedBlog || !integrationPathValid) return '';
+		// v2 renders inside a shadow root and applies the blog's saved embed
+		// appearance; v1 stays servable but is not recommended for new setups.
 		return [
 			'<div id="statesu-post"></div>',
 			'<script defer',
-			`  src="${location.origin}/embed/v1.js"`,
+			`  src="${location.origin}/embed/v2.js"`,
 			`  data-blog="${selectedBlog.slug}"`,
 			`  data-base-path="${integrationPath.trim()}"`,
 			'  data-target="statesu-post"><\/script>'
@@ -769,6 +772,26 @@
 		settingsSaved = true;
 	}
 
+	/**
+	 * Persists one appearance draft from the Embed appearance editor.
+	 * Returns the error string for the editor, or null on success.
+	 * @param {unknown} draft — wire-shaped appearance or null to clear
+	 * @returns {Promise<string | null>}
+	 */
+	async function saveAppearance(draft) {
+		if (!selectedBlogId) return 'No blog selected.';
+		const result = await request(`/blogs/${selectedBlogId}/appearance`, {
+			method: 'PUT',
+			body: { embed_appearance: draft }
+		});
+		if (!result.ok) {
+			if (signedOut(result)) return result.error;
+			return result.error;
+		}
+		blogs = blogs.map((blog) => (blog.id === result.data.id ? result.data : blog));
+		return null;
+	}
+
 	function startDraftPost() {
 		editorError = '';
 		editor = { id: null, slug: '', title: '', content_markdown: '', status: 'draft' };
@@ -1225,6 +1248,14 @@
 								<pre><code>{integrationSnippet}</code></pre>
 							</div>
 						</details>
+					{/if}
+				</div>
+				<div class="view">
+					<h3>Embed appearance</h3>
+					{#if !selectedBlog}
+						<p class="note">Create a blog first.</p>
+					{:else}
+						<EmbedAppearance blog={selectedBlog} save={saveAppearance} />
 					{/if}
 				</div>
 			{:else}
