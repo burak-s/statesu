@@ -28,3 +28,8 @@ export function parseApiOrigin(src) {
 export function apiUrl(origin, blogSlug, postSlug) {
 	return `${origin}/public/blogs/${encodeURIComponent(blogSlug)}/posts/${encodeURIComponent(postSlug)}`;
 }
+
+/// The blog profile endpoint: where the saved appearance travels.
+export function blogApiUrl(origin, blogSlug) {
+	return `${origin}/public/blogs/${encodeURIComponent(blogSlug)}`;
+}

@@ -17,7 +17,8 @@
 // v1 keeps serving pages until hosts pin v2 explicitly: no silent upgrade.
 
 import { parseBasePath, resolveSlug } from './url.js';
-import { parseApiOrigin, apiUrl } from './api.js';
+import { parseApiOrigin, apiUrl, blogApiUrl } from './api.js';
+import { applyAppearance, embedStyles, parseAppearance } from './appearance.js';
 import { buildMediaRenderer } from './media-renderer.js';
 import { createLightbox } from './lightbox.js';
 import {
@@ -54,20 +55,11 @@ function mediaByUrlOf(window, payload) {
 }
 
 function stylesFor(version) {
-	return `
-.statesu-v2 { color: inherit; font-family: inherit; font-size: 1rem; line-height: 1.6; }
-.statesu-v2 .statesu-state { opacity: .75; font-style: italic; }
-.statesu-v2 .statesu-error { opacity: .85; }
-.statesu-v2 .statesu-title { margin: 0 0 .5em; }
-.statesu-v2 .statesu-body img { max-width: 100%; height: auto; display: block; margin: 1.25em auto; }
-.statesu-v2 .statesu-body img.linked-in { display: inline; margin: 0; }
-.statesu-v2 .statesu-body pre { overflow-x: auto; }
-.statesu-v2 .statesu-body a { text-decoration: underline; }
-.statesu-v2 .statesu-announcement + .statesu-announcement { margin-top: 2rem; padding-top: 2rem; border-top: 1px solid currentColor; }
-.statesu-v2 .statesu-more { margin-top: 1.5rem; font: inherit; color: inherit; background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; }
-@media (prefers-reduced-motion: reduce) {
-	.statesu-v2 .statesu-body img { transition: none; }
-}`;
+	// The stylesheet lives in appearance.js, shared with the dashboard's
+	// appearance preview: the editor must never promise a look embeds
+	// cannot reproduce.
+	if (version === 'v2') return embedStyles();
+	throw new Error(`unknown embed stylesheet version: ${version}`);
 }
 
 function injectShadowStyles(shadowOwnerDocument, shadow, version) {
@@ -125,6 +117,21 @@ function attachMediaMetadata(body, mediaByUrl) {
 		if (!meta) continue;
 		if (meta.zoom_url) image.dataset.zoomUrl = meta.zoom_url;
 	}
+}
+
+/**
+ * Loads and validates the blog's saved appearance. Returns the normalized
+ * value or null: any failure reads as "no saved appearance", and the embed
+ * renders with its built-in styling.
+ */
+async function fetchAppearance(window, origin, blogSlug, timeoutMs) {
+	const result = await fetchPostJson(
+		window.fetch.bind(window),
+		blogApiUrl(origin, blogSlug),
+		timeoutMs
+	);
+	if (result.error) return null;
+	return parseAppearance(result.post?.embed_appearance);
 }
 
 function ownScript(document, libraryVersion) {
@@ -234,6 +241,15 @@ export function init(window, { timeoutMs = FETCH_TIMEOUT_MS } = {}) {
 		);
 		return;
 	}
+
+	// The blog's saved appearance travels beside the content, fetched in
+	// parallel under the same deadline. Any failure — network, payload,
+	// unsupported version — silently keeps the stock look; content never
+	// waits on it and custom properties inherit, so applying after render
+	// still styles everything already on the page.
+	fetchAppearance(window, configured.origin, blog, Math.max(0, timeoutMs)).then((value) => {
+		if (value) applyAppearance(root, value);
+	});
 
 	/**
 	 * Renders one validated post payload into the shadow root, wiring the

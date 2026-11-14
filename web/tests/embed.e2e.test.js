@@ -418,3 +418,99 @@ test('v2 without any media still renders through the metadata renderer', async (
 	const img = shadow.querySelector('img');
 	assert.equal(img, null);
 });
+
+// -------------------------------------------------------------------------
+// Embed v2 saved appearance (blog profile + internal custom properties)
+// -------------------------------------------------------------------------
+
+const appearance = {
+	version: 1,
+	colors: { text: '#1A2B3C', link: '#7c3aed', background: 'transparent' },
+	typography: { font: 'serif', body_size: 110, heading_scale: 130, line_height: 180 },
+	layout: { max_width: 720, padding: 24, spacing: 16 },
+	decoration: { border_width: 1, corner_radius: 8 }
+};
+
+/** Routes the post endpoint and the blog profile endpoint to payloads. */
+function profileFetcher(postPayload, profilePayload) {
+	return async (api) => ({
+		ok: true,
+		status: 200,
+		type: 'basic',
+		json: async () => (String(api).endsWith('/posts/test') ? postPayload : profilePayload)
+	});
+}
+
+function varsOf(root) {
+	const vars = {};
+	for (const name of root.style) {
+		if (name.startsWith('--statesu-internal')) vars[name] = root.style.getPropertyValue(name);
+	}
+	return vars;
+}
+
+test('v2 applies the saved appearance as internal custom properties', async () => {
+	const { shadow } = await bootV2({
+		fetchBehavior: profileFetcher(mediaPost, { embed_appearance: appearance })
+	});
+	assert.match(shadow.textContent, /Media Post/, 'content renders regardless');
+	const root = shadow.querySelector('.statesu-v2');
+	const vars = varsOf(root);
+	// Colors normalize; typography and layout convert to CSS values.
+	assert.equal(vars['--statesu-internal-text'], '#1a2b3c');
+	assert.equal(vars['--statesu-internal-link'], '#7c3aed');
+	assert.equal(vars['--statesu-internal-background'], 'transparent');
+	assert.match(vars['--statesu-internal-font'], /Georgia/);
+	assert.equal(vars['--statesu-internal-body-size'], '1.1rem');
+	assert.match(vars['--statesu-internal-heading'], /\* 1\.3\)/);
+	assert.equal(vars['--statesu-internal-line-height'], '1.8');
+	assert.equal(vars['--statesu-internal-max-width'], '720px');
+	assert.equal(vars['--statesu-internal-padding'], '24px');
+	assert.equal(vars['--statesu-internal-spacing'], '16px');
+	assert.equal(vars['--statesu-internal-border-width'], '1px');
+	assert.equal(vars['--statesu-internal-corner-radius'], '8px');
+});
+
+test('v2 keeps the stock look when the appearance payload is unusable', async () => {
+	for (const profile of [
+		{ embed_appearance: { version: 2 } },
+		{ embed_appearance: { version: 1, colors: { link: 'red' } } },
+		{ embed_appearance: { version: 1, typography: { body_size: 9000 } } },
+		{ embed_appearance: { version: 1, css: 'body { display: none }' } },
+		{ embed_appearance: 'not an object' },
+		{}
+	]) {
+		const { shadow } = await bootV2({ fetchBehavior: profileFetcher(mediaPost, profile) });
+		assert.match(shadow.textContent, /Media Post/);
+		const root = shadow.querySelector('.statesu-v2');
+		assert.equal(Object.keys(varsOf(root)).length, 0, `no tokens for ${JSON.stringify(profile)}`);
+	}
+});
+
+test('v2 renders content even when the appearance request fails', async () => {
+	const { shadow } = await bootV2({
+		fetchBehavior: async (api) => {
+			if (!String(api).endsWith('/posts/test')) {
+				return { ok: false, status: 500, type: 'basic', json: async () => ({}) };
+			}
+			return { ok: true, status: 200, type: 'basic', json: async () => mediaPost };
+		}
+	});
+	assert.match(shadow.textContent, /Media Post/);
+});
+
+test('v2 feed entries inherit the appearance from the feed root', async () => {
+	const feed = { items: [{ title: 'One', content_markdown: 'a' }, { title: 'Two', content_markdown: 'b' }], page: 1, size: 20, total: 2 };
+	const { shadow } = await bootV2({
+		scriptAttrs: { 'data-mode': 'feed', 'data-hide-title': '' },
+		fetchBehavior: async (api) => ({
+			ok: true,
+			status: 200,
+			type: 'basic',
+			json: async () => (String(api).includes('/posts?') ? feed : { embed_appearance: appearance })
+		})
+	});
+	const root = shadow.querySelector('.statesu-v2');
+	assert.equal(varsOf(root)['--statesu-internal-link'], '#7c3aed');
+	assert.equal(shadow.querySelectorAll('.statesu-announcement').length, 2);
+});
