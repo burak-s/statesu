@@ -358,7 +358,7 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
             "embed_appearance": {
                 "version": 1,
                 "colors": { "text": "#1A2B3C", "link": "#7c3aed", "background": "transparent" },
-                "typography": { "font": "serif", "body_size": 110 },
+                "typography": { "body_size": 110 },
                 "layout": { "max_width": 720, "padding": 24 },
                 "decoration": { "corner_radius": 8 }
             }
@@ -370,7 +370,9 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
     assert_eq!(appearance["version"], 1);
     assert_eq!(appearance["colors"]["text"], "#1a2b3c");
     assert_eq!(appearance["colors"]["background"], "transparent");
-    assert_eq!(appearance["typography"]["font"], "serif");
+    assert_eq!(appearance["typography"]["body_size"], 110);
+    assert!(appearance["typography"].get("font").is_none());
+    assert!(appearance["typography"].get("google_font").is_none());
 
     let listed = common::authed(&app, Method::GET, "/blogs", &token).await;
     assert_eq!(listed.json()[0]["embed_appearance"], appearance);
@@ -406,6 +408,8 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
     }
     // Shape violations (unknown or missing fields) are rejected at the body.
     for bad in [
+        json!({ "embed_appearance": { "version": 1, "typography": { "font": "serif" } } }),
+        json!({ "embed_appearance": { "version": 1, "typography": { "google_font": "Inter" } } }),
         json!({ "embed_appearance": { "version": 1, "css": "body{}" } }),
         json!({ "embed_appearance": {} }),
         json!({}),

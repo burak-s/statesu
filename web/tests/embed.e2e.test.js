@@ -460,7 +460,7 @@ test('v2 applies the saved appearance as internal custom properties', async () =
 	assert.equal(vars['--statesu-internal-text'], '#1a2b3c');
 	assert.equal(vars['--statesu-internal-link'], '#7c3aed');
 	assert.equal(vars['--statesu-internal-background'], 'transparent');
-	assert.match(vars['--statesu-internal-font'], /Georgia/);
+	assert.equal(vars['--statesu-internal-font'], undefined);
 	assert.equal(vars['--statesu-internal-body-size'], '1.1rem');
 	assert.equal(vars['--statesu-internal-heading-scale'], '1.3');
 	assert.equal(vars['--statesu-internal-line-height'], '1.8');
@@ -487,15 +487,15 @@ test('v2 keeps the stock look when the appearance payload is unusable', async ()
 	}
 });
 
-test('v2 keeps inherit typography and drops no neighbouring tokens', async () => {
+test('v2 ignores retired font choices without dropping neighbouring tokens', async () => {
 	const { shadow } = await bootV2({
 		fetchBehavior: profileFetcher(mediaPost, {
-			embed_appearance: { version: 1, typography: { font: 'inherit', body_size: 110, line_height: 180 } }
+			embed_appearance: { version: 1, typography: { font: 'serif', google_font: 'Inter', body_size: 110, line_height: 180 } }
 		})
 	});
 	const root = shadow.querySelector('.statesu-v2');
 	const vars = varsOf(root);
-	// `inherit` means no font declaration at all — the host page's font wins.
+	// Even old saved font choices cannot override the host page's font.
 	assert.equal(vars['--statesu-internal-font'], undefined);
 	assert.equal(vars['--statesu-internal-body-size'], '1.1rem');
 	assert.equal(vars['--statesu-internal-line-height'], '1.8');
@@ -587,7 +587,7 @@ test('v2 applies tokens that arrive before the content', async () => {
 	// The profile answers instantly; the content waits behind the gate.
 	const { shadow, release } = await bootGated({ gate: 'post', timeoutMs: 200 });
 	await settle();
-	assert.equal(Object.keys(varsOf(shadow.querySelector('.statesu-v2'))).length, 12);
+	assert.equal(Object.keys(varsOf(shadow.querySelector('.statesu-v2'))).length, 11);
 	release(postResponse);
 	await settle();
 	assert.match(shadow.textContent, /Media Post/);

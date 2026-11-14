@@ -32,12 +32,6 @@ export const RANGES = {
 	corner_radius: [0, 32]
 };
 
-const FONT_STACKS = {
-	sans: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif',
-	serif: 'ui-serif, Georgia, Cambria, "Times New Roman", serif',
-	mono: 'ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace'
-};
-
 /// UA heading font sizes; the scale token multiplies them so an unset scale
 /// reproduces the browser default exactly.
 const HEADING_SIZES = { h1: '2em', h2: '1.5em', h3: '1.17em', h4: '1em', h5: '.83em', h6: '.67em' };
@@ -61,11 +55,10 @@ export function parseAppearance(value) {
 			border: color
 		}),
 		typography: group(value.typography, {
-			font: font,
 			body_size: percent(RANGES.body_size),
 			heading_scale: percent(RANGES.heading_scale),
 			line_height: percent(RANGES.line_height)
-		}),
+		}, ['font', 'google_font']),
 		layout: group(value.layout, {
 			max_width: pixel(RANGES.max_width),
 			padding: pixel(RANGES.padding),
@@ -80,12 +73,13 @@ export function parseAppearance(value) {
 
 /// Applies one group with per-field validators; unknown or invalid fields
 /// reject the whole group (same all-or-nothing stance as the backend).
-function group(value, fields) {
+/// Retired font fields are ignored for compatibility with older deliveries.
+function group(value, fields, retired = []) {
 	if (value === undefined) return undefined;
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
 	const allowed = Object.keys(fields);
 	for (const key of Object.keys(value)) {
-		if (!allowed.includes(key)) return null;
+		if (!allowed.includes(key) && !retired.includes(key)) return null;
 	}
 	const out = {};
 	for (const [key, validate] of Object.entries(fields)) {
@@ -110,11 +104,6 @@ function background(value) {
 	if (value === 'transparent') return 'transparent';
 	if (typeof value === 'string' && value.toLowerCase() === 'transparent') return 'transparent';
 	return color(value);
-}
-
-function font(value) {
-	// `inherit` is a valid backend choice meaning "the host page's font".
-	return value === 'inherit' || FONT_STACKS[value] ? value : null;
 }
 
 /// Integer percentage within bounds; booleans and floats are rejected.
@@ -149,10 +138,6 @@ export function appearanceVars(appearance) {
 		vars['--statesu-internal-border-color'] = colors.border;
 	}
 	if (typography) {
-		// `inherit` means "the host page's font": no declaration at all.
-		vars['--statesu-internal-font'] = typography.font && typography.font !== 'inherit'
-			? FONT_STACKS[typography.font]
-			: undefined;
 		vars['--statesu-internal-body-size'] = typography.body_size !== undefined
 			? rem(typography.body_size)
 			: undefined;
@@ -213,7 +198,7 @@ export function embedStyles() {
 .statesu-v2 {
 	color: var(--statesu-text-color, var(--statesu-internal-text, inherit));
 	background-color: var(--statesu-background-color, var(--statesu-internal-background, transparent));
-	font-family: var(--statesu-font-family, var(--statesu-internal-font, inherit));
+	font-family: var(--statesu-font-family, inherit);
 	font-size: var(--statesu-body-size, var(--statesu-internal-body-size, 1rem));
 	line-height: var(--statesu-line-height, var(--statesu-internal-line-height, 1.6));
 	max-width: var(--statesu-max-width, var(--statesu-internal-max-width, none));

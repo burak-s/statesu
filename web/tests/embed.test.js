@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom';
 // URL resolution and API building are DOM-free.
 import { parseBasePath, resolveSlug, SLUG_PATTERN } from '../src/embed/url.js';
 import { parseApiOrigin, apiUrl, blogApiUrl } from '../src/embed/api.js';
-import { parseAppearance, appearanceVars, RANGES } from '../src/embed/appearance.js';
+import { parseAppearance, appearanceVars, applyAppearance, RANGES } from '../src/embed/appearance.js';
 
 // DOMPurify needs a window before its factory is instantiated, so the
 // content module is imported once a jsdom window is installed as global.
@@ -71,12 +71,29 @@ test('api URL building encodes slug segments', () => {
 // The parser is the shared contract with the backend validator
 // (src/blog/appearance.rs); the dashboard editor and the embed both lean on
 // it, so it must accept exactly what the server accepts.
-test('appearance parser accepts inherit fonts and keeps neighbouring tokens', () => {
+test('appearance parser ignores retired fonts and keeps neighbouring tokens', () => {
 	const parsed = parseAppearance({ version: 1, typography: { font: 'inherit', body_size: 110 } });
-	assert.deepEqual(parsed.typography, { font: 'inherit', body_size: 110 });
+	assert.deepEqual(parsed.typography, { body_size: 110 });
 	const vars = appearanceVars(parsed);
 	assert.equal(vars['--statesu-internal-font'], undefined);
 	assert.equal(vars['--statesu-internal-body-size'], '1.1rem');
+});
+
+test('retired font settings never set a font family or download fonts', () => {
+	const doc = new JSDOM('<!doctype html><html><head></head><body></body></html>').window.document;
+	const host = doc.createElement('div');
+	doc.body.appendChild(host);
+	const root = doc.createElement('article');
+	host.attachShadow({ mode: 'open' }).appendChild(root);
+	applyAppearance(root, parseAppearance({ version: 1, typography: { font: 'serif' } }));
+	assert.equal(doc.head.querySelectorAll('link').length, 0);
+	const appearance = parseAppearance({ version: 1, typography: { google_font: 'Noto Sans JP', font: 'serif' } });
+	applyAppearance(root, appearance);
+	applyAppearance(doc.createElement('article'), appearance);
+	assert.equal(doc.head.querySelectorAll('link').length, 0);
+	assert.equal(root.style.getPropertyValue('--statesu-internal-font'), '');
+	applyAppearance(root, parseAppearance({ version: 1, typography: { google_font: 'Inter&family=Other' } }));
+	assert.equal(doc.head.querySelectorAll('link').length, 0);
 });
 
 test('appearance parser mirrors backend bounds', () => {
@@ -93,7 +110,7 @@ test('appearance parser mirrors backend bounds', () => {
 	// Invalid fields reject their whole group, not the document; empty
 	// groups apply no tokens at all.
 	assert.equal(parseAppearance({ version: 1, layout: { padding: 97 } }).layout, null);
-	assert.equal(parseAppearance({ version: 1, typography: { font: 'comic sans' } }).typography, null);
+	assert.equal(parseAppearance({ version: 1, typography: { unknown: 'comic sans' } }).typography, null);
 	assert.equal(parseAppearance({ version: 1, colors: { link: '#ff00' } }).colors, null);
 	assert.deepEqual(appearanceVars(parseAppearance({ version: 1, layout: { padding: 97 } })), {});
 	const ok = parseAppearance({ version: 1, colors: { link: '#ABC' } });

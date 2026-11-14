@@ -60,26 +60,11 @@ pub struct ColorGroup {
 #[serde(deny_unknown_fields)]
 pub struct TypographyGroup {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub font: Option<FontChoice>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body_size: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heading_scale: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub line_height: Option<u16>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum FontChoice {
-    /// Predefined system sans-serif stack.
-    Sans,
-    /// Predefined system serif stack.
-    Serif,
-    /// Predefined system monospace stack.
-    Mono,
-    /// The host page's font family.
-    Inherit,
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -149,7 +134,16 @@ impl EmbedAppearance {
 /// out-of-range stored JSON reads as unset, so one bad row can never break
 /// delivery of the blog itself.
 pub fn parse_saved(raw: &str) -> Option<EmbedAppearance> {
-    let mut value: EmbedAppearance = serde_json::from_str(raw).ok()?;
+    let mut stored: serde_json::Value = serde_json::from_str(raw).ok()?;
+    // Retired font choices must not discard a blog's other saved styling.
+    if let Some(typography) = stored
+        .get_mut("typography")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        typography.remove("font");
+        typography.remove("google_font");
+    }
+    let mut value: EmbedAppearance = serde_json::from_value(stored).ok()?;
     if value.version != APPEARANCE_VERSION {
         return None;
     }
@@ -216,7 +210,7 @@ mod tests {
                 "muted": "#666666",
                 "border": "#DDD"
             },
-            "typography": { "font": "serif", "body_size": 110, "line_height": 180 },
+            "typography": { "body_size": 110, "line_height": 180 },
             "layout": { "max_width": 720, "padding": 24 },
             "decoration": { "border_width": 1, "corner_radius": 8 }
         }));
@@ -229,10 +223,30 @@ mod tests {
             value.colors.as_ref().unwrap().background.as_deref(),
             Some("#aabbcc")
         );
-        assert_eq!(
-            value.typography.as_ref().unwrap().font,
-            Some(FontChoice::Serif)
-        );
+        assert_eq!(value.typography.as_ref().unwrap().body_size, Some(110));
+    }
+
+    #[test]
+    fn retired_fonts_are_ignored_in_storage_but_rejected_on_writes() {
+        for field in ["font", "google_font"] {
+            let raw = json!({
+                "version": 1,
+                "typography": { field: "serif", "body_size": 110 },
+                "colors": { "text": "#abc" }
+            });
+            assert!(serde_json::from_value::<EmbedAppearance>(raw.clone()).is_err());
+            let saved = parse_saved(&raw.to_string()).expect("legacy appearance remains usable");
+            assert_eq!(saved.typography.as_ref().unwrap().body_size, Some(110));
+            assert_eq!(
+                saved.colors.as_ref().unwrap().text.as_deref(),
+                Some("#aabbcc")
+            );
+            assert!(
+                serde_json::to_value(saved).unwrap()["typography"]
+                    .get(field)
+                    .is_none()
+            );
+        }
     }
 
     #[test]

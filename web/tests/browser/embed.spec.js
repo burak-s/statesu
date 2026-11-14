@@ -214,14 +214,14 @@ test('saved appearance styles the v2 embed while v1 and host overrides keep thei
 			embed_appearance: {
 				version: 1,
 				colors: { text: '#123456', link: '#ff0000' },
-				typography: { font: 'serif', heading_scale: 200 },
+				typography: { heading_scale: 200 },
 				layout: { spacing: 32 }
 			}
 		}
 	}));
 
 	// The saved appearance applies inside the shadow root.
-	await page.goto(postUrl(account, 'styled', { v: '2' }));
+	await page.goto(postUrl(account, 'styled', { v: '2', style: '#statesu-post { font-family: Georgia, serif; }' }));
 	const title = page.locator('.statesu-title');
 	await expect(title).toHaveText('Post styled');
 	await expect.poll(() => title.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(18, 52, 86)');
@@ -241,10 +241,11 @@ test('saved appearance styles the v2 embed while v1 and host overrides keep thei
 	// Documented host-page overrides beat the saved appearance.
 	await page.goto(postUrl(account, 'styled', {
 		v: '2',
-		style: '#statesu-post { --statesu-link-color: #00ff00; }'
+		style: '#statesu-post { --statesu-link-color: #00ff00; --statesu-font-family: monospace; }'
 	}));
 	const overridden = page.locator('.statesu-body a');
 	await expect(overridden).toHaveText('link');
+	await expect(page.locator('.statesu-title')).toHaveCSS('font-family', 'monospace');
 	await expect.poll(() => overridden.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(0, 255, 0)');
 
 	// v1 embeds ignore the appearance: their look stays host-page-driven.
@@ -277,7 +278,9 @@ test('the appearance editor saves typed values and the preview matches the embed
 	const appearance = saved.find((blog) => blog.id === account.blog.id).embed_appearance;
 	expect(appearance.typography.body_size).toBe(110);
 	expect(appearance.colors.text).toBe('#123456');
-	expect(appearance.typography.font).toBe('serif');
+	expect(appearance.typography.font).toBeUndefined();
+	expect(appearance.typography.google_font).toBeUndefined();
+	await expect(section.locator('select')).toHaveCount(0);
 
 	// The preview renders through the embed's own stylesheet inside a shadow
 	// root: the saved tokens are visible there immediately.
@@ -304,9 +307,9 @@ test('the appearance editor saves typed values and the preview matches the embed
 	expect(cleared.find((blog) => blog.id === account.blog.id).embed_appearance).toBeUndefined();
 });
 
-test('inherited saved fonts stay clean after opening and discarding edits', async ({ page, request, account }) => {
+test('inherited typography stays clean after opening and discarding edits', async ({ page, request, account }) => {
 	await signIn(page, account);
-	for (const typography of [{ font: 'inherit' }, { font: 'inherit', body_size: 110 }]) {
+	for (const typography of [{}, { body_size: 110 }]) {
 		await json(await request.put(`${API}/blogs/${account.blog.id}/appearance`, {
 			headers: account.headers,
 			data: { embed_appearance: { version: 1, typography } }
@@ -369,7 +372,7 @@ test('the dashboard preview and the real embed share one computed style', async 
 			embed_appearance: {
 				version: 1,
 				colors: { text: '#1a2b3c', link: '#7c3aed', muted: '#6e6e6e', background: '#ffffff' },
-				typography: { font: 'serif', body_size: 110, heading_scale: 120, line_height: 180 },
+				typography: { body_size: 110, heading_scale: 120, line_height: 180 },
 				layout: { max_width: 720, padding: 24, spacing: 16 },
 				decoration: { border_width: 1, corner_radius: 8 }
 			}
@@ -411,9 +414,11 @@ test('the dashboard preview and the real embed share one computed style', async 
 	// The preview shadow tree is built in an effect after mount; wait for
 	// its content before measuring.
 	await expect(page.locator('.preview-host .statesu-title')).toHaveText('Sample post');
+	// Family is now inherited, so compare the two surfaces under the same host CSS.
+	await page.locator('.preview-host').evaluate((host) => { host.style.fontFamily = 'Georgia, serif'; });
 	const previewStyles = await capture(page.locator('.preview-host'));
 
-	await page.goto(postUrl(account, 'parity', { v: '2' }));
+	await page.goto(postUrl(account, 'parity', { v: '2', style: '#statesu-post { font-family: Georgia, serif; }' }));
 	// The shadow root lives on the embed's host child, not on the target.
 	await expect(page.locator('.statesu-title')).toHaveText('Post parity');
 	const embedStyles2 = await capture(page.locator('[data-statesu-v2-host]'));

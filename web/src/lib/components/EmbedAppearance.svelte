@@ -14,13 +14,6 @@
 	 */
 	let { blog, save } = $props();
 
-	const FONT_OPTIONS = [
-		{ value: '', label: 'Default (inherit)' },
-		{ value: 'sans', label: 'Sans (system)' },
-		{ value: 'serif', label: 'Serif (system)' },
-		{ value: 'mono', label: 'Monospace (system)' }
-	];
-
 	const PRESETS = [
 		{
 			id: 'stock',
@@ -31,10 +24,10 @@
 		{
 			id: 'editorial',
 			label: 'Editorial',
-			hint: 'Serif text, generous line height',
+			hint: 'Generous line height and heading scale',
 			value: {
 				version: 1,
-				typography: { font: 'serif', line_height: 180, heading_scale: 120 },
+				typography: { line_height: 180, heading_scale: 120 },
 				layout: { max_width: 720, spacing: 8 }
 			}
 		},
@@ -44,7 +37,6 @@
 			hint: 'Bordered, padded panel',
 			value: {
 				version: 1,
-				typography: { font: 'sans' },
 				layout: { max_width: 760, padding: 24, spacing: 16 },
 				decoration: { border_width: 1, corner_radius: 12 }
 			}
@@ -98,15 +90,16 @@
 	/**
 	 * Snapshot helper: `$state` proxies cannot be `structuredClone`d, but
 	 * every value here is plain JSON data, so a JSON round-trip is both safe
-	 * and detached from reactivity. `font: 'inherit'` is dropped because
-	 * "unset" carries the same meaning.
+	 * and detached from reactivity. Retired font choices are dropped so
+	 * old saved appearances cannot reintroduce font selection.
 	 * @param {any} appearance @returns {any}
 	 */
 	function toJsonSafe(appearance) {
 		if (!appearance) return null;
 		const copy = JSON.parse(JSON.stringify(appearance));
-		if (copy.typography?.font === 'inherit') {
+		if (copy.typography) {
 			delete copy.typography.font;
+			delete copy.typography.google_font;
 			if (Object.keys(copy.typography).length === 0) delete copy.typography;
 		}
 		return copy;
@@ -374,19 +367,8 @@
 			{/each}
 
 			<h4>Typography</h4>
-			<div class="token">
-				<label for="appearance-font">Font</label>
-				<select
-					id="appearance-font"
-					value={token('typography', 'font')}
-					onchange={(event) => setToken('typography', 'font', /** @type {HTMLSelectElement} */ (event.target).value)}
-				>
-					{#each FONT_OPTIONS as option (option.value)}
-						<option value={option.value}>{option.label}</option>
-					{/each}
-				</select>
-			</div>
-			{#each TOKEN_FIELDS.filter((field) => field.group === 'typography' && field.key !== 'font') as field (field.key)}
+			<p class="note">Fonts are inherited from your website. The embed does not load fonts.</p>
+			{#each TOKEN_FIELDS.filter((field) => field.group === 'typography') as field (field.key)}
 				<div class="token" class:invalid={invalidToken(field.group, field.key)}>
 					<label for={`appearance-${field.key}`}>{field.label}</label>
 					<input

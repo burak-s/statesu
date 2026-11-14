@@ -207,7 +207,7 @@ async fn public_blog_profile_delivers_saved_appearance() {
             "embed_appearance": {
                 "version": 1,
                 "colors": { "text": "#ABCDEF", "link": "#7c3aed" },
-                "typography": { "font": "serif" }
+                "typography": { "body_size": 110 }
             }
         }),
     )
@@ -221,7 +221,13 @@ async fn public_blog_profile_delivers_saved_appearance() {
     let body = styled.json();
     assert_eq!(body["embed_appearance"]["version"], 1);
     assert_eq!(body["embed_appearance"]["colors"]["text"], "#abcdef");
-    assert_eq!(body["embed_appearance"]["typography"]["font"], "serif");
+    assert_eq!(body["embed_appearance"]["typography"]["body_size"], 110);
+    assert!(body["embed_appearance"]["typography"].get("font").is_none());
+    assert!(
+        body["embed_appearance"]["typography"]
+            .get("google_font")
+            .is_none()
+    );
     // Management-only data still never reaches delivery.
     assert!(body.get("owner_id").is_none());
     assert!(body.get("origins").is_none());

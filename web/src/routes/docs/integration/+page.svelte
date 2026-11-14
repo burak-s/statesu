@@ -56,6 +56,7 @@
 	<h2>Style your embeds once</h2>
 	<p>In the dashboard, open your blog's settings and use <strong>Embed appearance</strong>: pick a preset, adjust colors, typography, layout and decoration against a live preview, and save. The saved appearance is stored per blog and applied by every <code>/embed/v2.js</code> installation automatically — visitors' snippets never change, and your next save shows up on their next page load.</p>
 	<p>The controls are typed style tokens, not free-form CSS: colors accept <code>#rgb</code>, <code>#rrggbb</code> or (for the background) <code>transparent</code>; sizes are percentages of the built-in value; layout and decoration are pixels with documented bounds. Anything unset keeps the built-in look, and values that fail validation are rejected at save time.</p>
+	<p>Font families are inherited from the host website’s CSS, or use the browser default when none is set. The embed never downloads fonts and saved appearances cannot choose a font family. To override the inherited family explicitly, set <code>--statesu-font-family</code> on the embed target.</p>
 	<h3>Developer overrides</h3>
 	<p>A website can still steer individual tokens with CSS custom properties on the embed target, without touching the shadow tree:</p>
 	<Terminal code={overrides} language="css" />
