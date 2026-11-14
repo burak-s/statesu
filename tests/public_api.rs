@@ -5,8 +5,7 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::json;
 
 use common::{
-    EMAIL, PASSWORD, TestApp, create_blog, create_post, patch_post, register_token,
-    set_origins,
+    EMAIL, PASSWORD, TestApp, create_blog, create_post, patch_post, register_token, set_origins,
 };
 
 const SITE_ORIGIN: &str = "https://site.example";

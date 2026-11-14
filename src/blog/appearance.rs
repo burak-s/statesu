@@ -169,9 +169,10 @@ pub fn to_json(value: &EmbedAppearance) -> Result<String, Error> {
 
 fn bound<T: PartialOrd>(value: &mut Option<T>, range: (T, T)) -> Result<(), Error> {
     if let Some(inner) = value
-        && !(range.0..=range.1).contains(inner) {
-            return Err(Error::InvalidInput);
-        }
+        && !(range.0..=range.1).contains(inner)
+    {
+        return Err(Error::InvalidInput);
+    }
     Ok(())
 }
 
