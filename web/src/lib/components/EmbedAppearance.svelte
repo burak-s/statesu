@@ -4,7 +4,7 @@
 	// value; presets fill the same fields the controls bind to, and the
 	// preview renders through the embed's own modules so what the owner sees
 	// here is what visitors get.
-	import { embedStyles, parseAppearance, applyAppearance } from '../../embed/appearance.js';
+	import { embedStyles, parseAppearance, applyAppearance, RANGES } from '../../embed/appearance.js';
 	import { buildMediaRenderer } from '../../embed/media-renderer.js';
 	import { renderPost } from '../../embed/common.js';
 
@@ -51,14 +51,23 @@
 		}
 	];
 
+	// Preview samples cover the structures the tokens touch: headings,
+	// paragraph rhythm, lists, quotes, code, links and an image.
 	const SAMPLE_POST = {
 		title: 'Sample post',
 		content_markdown:
 			'A paragraph with a [link](https://example.com), some **bold** and *emphasis* text.\n\n' +
+			'## Section heading\n\n' +
 			'- First list item\n- Second list item\n\n' +
 			'> A quoted line of text\n\n' +
-			'```js\nconst ready = true;\n```'
+			'```js\nconst ready = true;\n```\n\n' +
+			'![Sample image](https://media.example.com/statesu/sample/source.webp)'
 	};
+
+	const SAMPLE_FEED = [
+		{ title: 'First announcement', content_markdown: 'The first entry with a [link](https://example.com).' },
+		{ title: 'Second announcement', content_markdown: 'The second entry, separated by the feed divider.' }
+	];
 
 	// Draft state ------------------------------------------------------------
 	/** The in-progress appearance in wire shape (snake_case groups); null means stock. */
@@ -80,16 +89,27 @@
 		const id = blog?.id ?? '';
 		if (id !== draftBlogId) {
 			draftBlogId = id;
-			draft = structuredClone(toJsonSafe(savedAppearance));
+			draft = toJsonSafe(savedAppearance);
 			saveError = '';
 			savedNote = false;
 		}
 	});
 
-	/** @param {any} appearance @returns {any} */
+	/**
+	 * Snapshot helper: `$state` proxies cannot be `structuredClone`d, but
+	 * every value here is plain JSON data, so a JSON round-trip is both safe
+	 * and detached from reactivity. `font: 'inherit'` is dropped because
+	 * "unset" carries the same meaning.
+	 * @param {any} appearance @returns {any}
+	 */
 	function toJsonSafe(appearance) {
-		// The saved value arrives exactly as it should be re-sent.
-		return appearance ? structuredClone(appearance) : null;
+		if (!appearance) return null;
+		const copy = JSON.parse(JSON.stringify(appearance));
+		if (copy.typography?.font === 'inherit') {
+			delete copy.typography.font;
+			if (Object.keys(copy.typography).length === 0) delete copy.typography;
+		}
+		return copy;
 	}
 
 	/** @returns {any} */
@@ -155,18 +175,6 @@
 		{ group: 'decoration', key: 'corner_radius', label: 'Corner radius (px)' }
 	];
 
-	/** @type {{ [key: string]: [number, number] }} */
-	const RANGES = {
-		body_size: [75, 200],
-		heading_scale: [100, 225],
-		line_height: [100, 250],
-		max_width: [320, 1200],
-		padding: [0, 96],
-		spacing: [0, 96],
-		border_width: [0, 8],
-		corner_radius: [0, 32]
-	};
-
 	/** True when a token is present but malformed; such drafts cannot be saved.
 	 *  @param {string} group @param {string} key
 	 */
@@ -186,11 +194,19 @@
 
 	const hasInvalidTokens = $derived(TOKEN_FIELDS.some(({ group, key }) => invalidToken(group, key)));
 
-	// Draft wiring shape for the API: numbers come from number inputs, so
-	// they are already integers or ''.
+	// Draft wiring shape for the API: number inputs deliver strings, so the
+	// token values are converted to the integers the backend expects. An
+	// unparsable entry stays a string and is rejected by validation instead.
 	const draftForWire = $derived.by(() => {
 		if (!draft) return null;
-		return structuredClone(draft);
+		const copy = toJsonSafe(draft);
+		for (const { group, key } of TOKEN_FIELDS) {
+			const value = copy[group]?.[key];
+			if (typeof value === 'string' && value !== '' && group !== 'colors') {
+				copy[group][key] = Number(value);
+			}
+		}
+		return copy;
 	});
 
 	const dirty = $derived.by(() => {
@@ -260,8 +276,9 @@
 	// Preview ----------------------------------------------------------------
 	/** @type {HTMLDivElement | null} */
 	let previewHost = $state(null);
+	let previewFeed = $state(false);
 
-	// Build the shadow tree once; the preview then only swaps tokens.
+	// Build the shadow tree once.
 	$effect(() => {
 		if (!previewHost || previewHost.shadowRoot) return;
 		const shadow = previewHost.attachShadow({ mode: 'open' });
@@ -271,7 +288,30 @@
 		const root = document.createElement('article');
 		root.className = 'statesu-v2 statesu-embed';
 		shadow.appendChild(root);
-		renderPost(window, root, SAMPLE_POST, buildMediaRenderer(window, new Map()), false);
+	});
+
+	// Samples mirror the embed's own structures: one post, or a feed of
+	// announcements separated by the divider the spacing/border tokens
+	// style. renderPost appends, so mode switches rebuild the content.
+	$effect(() => {
+		const root = /** @type {HTMLElement | null} */ (previewHost?.shadowRoot?.querySelector('.statesu-v2') ?? null);
+		if (!root) return;
+		const feed = previewFeed;
+		root.textContent = '';
+		const renderer = buildMediaRenderer(window, new Map());
+		if (feed) {
+			const container = document.createElement('div');
+			container.className = 'statesu-feed';
+			for (const post of SAMPLE_FEED) {
+				const entry = document.createElement('article');
+				entry.className = 'statesu-announcement';
+				renderPost(window, entry, post, renderer, false);
+				container.appendChild(entry);
+			}
+			root.appendChild(container);
+		} else {
+			renderPost(window, root, SAMPLE_POST, renderer, false);
+		}
 	});
 
 	// Track the draft deeply so every token edit restyles the preview; the
@@ -398,6 +438,11 @@
 			<div class="preview-bar">
 				<strong>Preview</strong>
 				<span class="note">{draft ? 'Saved appearance' : 'Built-in look'}</span>
+				<button
+					type="button"
+					class="width-toggle"
+					onclick={() => (previewFeed = !previewFeed)}
+				>{previewFeed ? 'Post' : 'Feed'}</button>
 				<button type="button" class="width-toggle" onclick={() => (narrowPreview = !narrowPreview)}>
 					{narrowPreview ? 'Desktop' : 'Mobile'}
 				</button>

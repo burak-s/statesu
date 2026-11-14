@@ -15,9 +15,13 @@
 
 export const APPEARANCE_VERSION = 1;
 
-/// Bounds mirror src/blog/appearance.rs; sizes are percentages (100 = the
-/// built-in value), layout and decoration are pixels.
-const RANGES = {
+/**
+ * Bounds mirror src/blog/appearance.rs; sizes are percentages (100 = the
+ * built-in value), layout and decoration are pixels. Shared with the
+ * dashboard editor so both validate against one contract.
+ * @type {{ [key: string]: [number, number] }}
+ */
+export const RANGES = {
 	body_size: [75, 200],
 	heading_scale: [100, 225],
 	line_height: [100, 250],
@@ -33,6 +37,10 @@ const FONT_STACKS = {
 	serif: 'ui-serif, Georgia, Cambria, "Times New Roman", serif',
 	mono: 'ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace'
 };
+
+/// UA heading font sizes; the scale token multiplies them so an unset scale
+/// reproduces the browser default exactly.
+const HEADING_SIZES = { h1: '2em', h2: '1.5em', h3: '1.17em', h4: '1em', h5: '.83em', h6: '.67em' };
 
 const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
 
@@ -105,7 +113,8 @@ function background(value) {
 }
 
 function font(value) {
-	return FONT_STACKS[value] ? value : null;
+	// `inherit` is a valid backend choice meaning "the host page's font".
+	return value === 'inherit' || FONT_STACKS[value] ? value : null;
 }
 
 /// Integer percentage within bounds; booleans and floats are rejected.
@@ -141,12 +150,16 @@ export function appearanceVars(appearance) {
 	}
 	if (typography) {
 		// `inherit` means "the host page's font": no declaration at all.
-		vars['--statesu-internal-font'] = typography.font ? FONT_STACKS[typography.font] : undefined;
+		vars['--statesu-internal-font'] = typography.font && typography.font !== 'inherit'
+			? FONT_STACKS[typography.font]
+			: undefined;
 		vars['--statesu-internal-body-size'] = typography.body_size !== undefined
 			? rem(typography.body_size)
 			: undefined;
-		vars['--statesu-internal-heading'] = typography.heading_scale !== undefined
-			? `calc(var(--statesu-body-size, var(--statesu-internal-body-size, 1rem)) * ${typography.heading_scale / 100})`
+		// A unitless multiplier: each heading rule applies it to its own
+		// built-in size, so unset stays at the browser default.
+		vars['--statesu-internal-heading-scale'] = typography.heading_scale !== undefined
+			? String(typography.heading_scale / 100)
 			: undefined;
 		vars['--statesu-internal-line-height'] = typography.line_height !== undefined
 			? String(typography.line_height / 100)
@@ -222,15 +235,30 @@ export function embedStyles() {
 }
 .statesu-v2 .statesu-title {
 	margin: 0 0 var(--statesu-spacing, var(--statesu-internal-spacing, .5em));
-	font-size: var(--statesu-heading-size, var(--statesu-internal-heading, 1.5em));
+	font-size: var(--statesu-heading-size, calc(1.5em * var(--statesu-heading-scale, var(--statesu-internal-heading-scale, 1))));
 }
+${Object.entries(HEADING_SIZES).map(([tag, size]) =>
+	`.statesu-v2 .statesu-body ${tag} { font-size: var(--statesu-heading-size, calc(${size} * var(--statesu-heading-scale, var(--statesu-internal-heading-scale, 1)))); }`
+).join('\n')}
 .statesu-v2 .statesu-body img { max-width: 100%; height: auto; display: block; margin: 1.25em auto; }
 .statesu-v2 .statesu-body img.linked-in { display: inline; margin: 0; }
 .statesu-v2 .statesu-body pre { overflow-x: auto; }
-.statesu-v2 .statesu-body a {
-	color: var(--statesu-link-color, var(--statesu-internal-link, inherit));
+/* Content rhythm: paragraph, list, quote and code spacing follow the
+   spacing token; 1em is the built-in UA block margin, so unset stays stock.
+   Links keep UA behavior when no token exists — only unvisited links are
+   tokenized, so visited styling is never overridden. */
+.statesu-v2 .statesu-body p,
+.statesu-v2 .statesu-body ul,
+.statesu-v2 .statesu-body ol,
+.statesu-v2 .statesu-body blockquote,
+.statesu-v2 .statesu-body pre {
+	margin-block: var(--statesu-spacing, var(--statesu-internal-spacing, 1em));
+}
+.statesu-v2 .statesu-body a:link {
+	color: var(--statesu-link-color, var(--statesu-internal-link, LinkText));
 	text-decoration: underline;
 }
+.statesu-v2 .statesu-body a { text-decoration: underline; }
 .statesu-v2 .statesu-announcement + .statesu-announcement {
 	margin-top: var(--statesu-spacing, var(--statesu-internal-spacing, 2rem));
 	padding-top: var(--statesu-spacing, var(--statesu-internal-spacing, 2rem));

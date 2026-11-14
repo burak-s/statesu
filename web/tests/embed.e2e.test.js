@@ -462,7 +462,7 @@ test('v2 applies the saved appearance as internal custom properties', async () =
 	assert.equal(vars['--statesu-internal-background'], 'transparent');
 	assert.match(vars['--statesu-internal-font'], /Georgia/);
 	assert.equal(vars['--statesu-internal-body-size'], '1.1rem');
-	assert.match(vars['--statesu-internal-heading'], /\* 1\.3\)/);
+	assert.equal(vars['--statesu-internal-heading-scale'], '1.3');
 	assert.equal(vars['--statesu-internal-line-height'], '1.8');
 	assert.equal(vars['--statesu-internal-max-width'], '720px');
 	assert.equal(vars['--statesu-internal-padding'], '24px');
@@ -485,6 +485,20 @@ test('v2 keeps the stock look when the appearance payload is unusable', async ()
 		const root = shadow.querySelector('.statesu-v2');
 		assert.equal(Object.keys(varsOf(root)).length, 0, `no tokens for ${JSON.stringify(profile)}`);
 	}
+});
+
+test('v2 keeps inherit typography and drops no neighbouring tokens', async () => {
+	const { shadow } = await bootV2({
+		fetchBehavior: profileFetcher(mediaPost, {
+			embed_appearance: { version: 1, typography: { font: 'inherit', body_size: 110, line_height: 180 } }
+		})
+	});
+	const root = shadow.querySelector('.statesu-v2');
+	const vars = varsOf(root);
+	// `inherit` means no font declaration at all — the host page's font wins.
+	assert.equal(vars['--statesu-internal-font'], undefined);
+	assert.equal(vars['--statesu-internal-body-size'], '1.1rem');
+	assert.equal(vars['--statesu-internal-line-height'], '1.8');
 });
 
 test('v2 renders content even when the appearance request fails', async () => {

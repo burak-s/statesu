@@ -4,7 +4,8 @@ import { JSDOM } from 'jsdom';
 
 // URL resolution and API building are DOM-free.
 import { parseBasePath, resolveSlug, SLUG_PATTERN } from '../src/embed/url.js';
-import { parseApiOrigin, apiUrl } from '../src/embed/api.js';
+import { parseApiOrigin, apiUrl, blogApiUrl } from '../src/embed/api.js';
+import { parseAppearance, appearanceVars, RANGES } from '../src/embed/appearance.js';
 
 // DOMPurify needs a window before its factory is instantiated, so the
 // content module is imported once a jsdom window is installed as global.
@@ -64,6 +65,39 @@ test('resolveSlug: root base path', () => {
 test('api URL building encodes slug segments', () => {
 	assert.equal(apiUrl('https://api.example', 'burak', 'test'), 'https://api.example/public/blogs/burak/posts/test');
 	assert.equal(apiUrl('https://api.example', 'burak', 'a/b'), 'https://api.example/public/blogs/burak/posts/a%2Fb');
+	assert.equal(blogApiUrl('https://api.example', 'burak'), 'https://api.example/public/blogs/burak');
+});
+
+// The parser is the shared contract with the backend validator
+// (src/blog/appearance.rs); the dashboard editor and the embed both lean on
+// it, so it must accept exactly what the server accepts.
+test('appearance parser accepts inherit fonts and keeps neighbouring tokens', () => {
+	const parsed = parseAppearance({ version: 1, typography: { font: 'inherit', body_size: 110 } });
+	assert.deepEqual(parsed.typography, { font: 'inherit', body_size: 110 });
+	const vars = appearanceVars(parsed);
+	assert.equal(vars['--statesu-internal-font'], undefined);
+	assert.equal(vars['--statesu-internal-body-size'], '1.1rem');
+});
+
+test('appearance parser mirrors backend bounds', () => {
+	assert.deepEqual(RANGES, {
+		body_size: [75, 200],
+		heading_scale: [100, 225],
+		line_height: [100, 250],
+		max_width: [320, 1200],
+		padding: [0, 96],
+		spacing: [0, 96],
+		border_width: [0, 8],
+		corner_radius: [0, 32]
+	});
+	// Invalid fields reject their whole group, not the document; empty
+	// groups apply no tokens at all.
+	assert.equal(parseAppearance({ version: 1, layout: { padding: 97 } }).layout, null);
+	assert.equal(parseAppearance({ version: 1, typography: { font: 'comic sans' } }).typography, null);
+	assert.equal(parseAppearance({ version: 1, colors: { link: '#ff00' } }).colors, null);
+	assert.deepEqual(appearanceVars(parseAppearance({ version: 1, layout: { padding: 97 } })), {});
+	const ok = parseAppearance({ version: 1, colors: { link: '#ABC' } });
+	assert.equal(ok.colors.link, '#aabbcc');
 });
 
 test('api origin policy: https always, http only for local hosts', () => {

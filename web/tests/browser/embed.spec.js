@@ -206,7 +206,7 @@ test('real bundle resolves deep links, refresh, future posts and the root prefix
 test('saved appearance styles the v2 embed while v1 and host overrides keep their rules', async ({ page, request, account }) => {
 	await createPost(request, account, 'styled', {
 		status: 'published',
-		content_markdown: 'Text with a [link](https://example.com) inside.'
+		content_markdown: 'Text with a [link](https://example.com) inside.\n\n# Styled heading\n\nA paragraph for the rhythm.'
 	});
 	await json(await request.put(`${API}/blogs/${account.blog.id}/appearance`, {
 		headers: account.headers,
@@ -214,7 +214,8 @@ test('saved appearance styles the v2 embed while v1 and host overrides keep thei
 			embed_appearance: {
 				version: 1,
 				colors: { text: '#123456', link: '#ff0000' },
-				typography: { font: 'serif' }
+				typography: { font: 'serif', heading_scale: 200 },
+				layout: { spacing: 32 }
 			}
 		}
 	}));
@@ -229,6 +230,13 @@ test('saved appearance styles the v2 embed while v1 and host overrides keep thei
 	await expect.poll(() => link.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(255, 0, 0)');
 	const fontFamily = await title.evaluate((el) => getComputedStyle(el).fontFamily);
 	expect(fontFamily).toContain('Georgia');
+	// Heading scale multiplies every Markdown heading, and the spacing
+	// token drives the paragraph rhythm.
+	const heading = page.locator('.statesu-body h1');
+	await expect(heading).toHaveText('Styled heading');
+	await expect.poll(() => heading.evaluate((el) => getComputedStyle(el).fontSize)).toBe('64px');
+	const paragraph = page.locator('.statesu-body p').last();
+	await expect.poll(() => paragraph.evaluate((el) => getComputedStyle(el).marginBlockStart)).toBe('32px');
 
 	// Documented host-page overrides beat the saved appearance.
 	await page.goto(postUrl(account, 'styled', {
@@ -244,6 +252,54 @@ test('saved appearance styles the v2 embed while v1 and host overrides keep thei
 	const v1Title = page.locator('.statesu-title');
 	await expect(v1Title).toHaveText('Post styled');
 	await expect.poll(() => v1Title.evaluate((el) => getComputedStyle(el).color)).not.toBe('rgb(18, 52, 86)');
+});
+
+test('the appearance editor saves typed values and the preview matches the embed', async ({ page, request, account }) => {
+	await signIn(page, account);
+	await page.getByRole('button', { name: 'Settings for Browser blog', exact: true }).click();
+	const section = page.locator('.appearance');
+	await expect(section).toBeVisible();
+
+	// Presets work: Editorial fills the draft without crashing.
+	await section.getByRole('button', { name: 'Editorial', exact: true }).click();
+	await expect(section.getByLabel('Body size (%)', { exact: true })).toHaveValue('');
+
+	// Numeric tokens are submitted as numbers; the backend rejects strings.
+	const bodySize = section.getByLabel('Body size (%)', { exact: true });
+	await bodySize.fill('110');
+	const textColor = section.getByLabel('Text color', { exact: true });
+	await textColor.fill('#123456');
+	await expect(section.getByRole('button', { name: 'Save appearance' })).toBeEnabled();
+	await section.getByRole('button', { name: 'Save appearance', exact: true }).click();
+	await expect(section.getByRole('status')).toContainText('Appearance saved');
+
+	const saved = await json(await request.get(`${API}/blogs`, { headers: account.headers }));
+	const appearance = saved.find((blog) => blog.id === account.blog.id).embed_appearance;
+	expect(appearance.typography.body_size).toBe(110);
+	expect(appearance.colors.text).toBe('#123456');
+	expect(appearance.typography.font).toBe('serif');
+
+	// The preview renders through the embed's own stylesheet inside a shadow
+	// root: the saved tokens are visible there immediately.
+	const previewTitle = section.locator('.preview-host .statesu-title');
+	await expect(previewTitle).toHaveText('Sample post');
+	await expect.poll(() => previewTitle.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(18, 52, 86)');
+	await expect(section.locator('.preview-host .statesu-body h2')).toHaveText('Section heading');
+	await expect(section.locator('.preview-host .statesu-body img')).toHaveCount(1);
+
+	// The feed sample renders announcement entries with the divider.
+	await section.getByRole('button', { name: 'Feed', exact: true }).click();
+	await expect(section.locator('.preview-host .statesu-announcement')).toHaveCount(2);
+	await section.getByRole('button', { name: 'Post', exact: true }).click();
+	await expect(section.locator('.preview-host .statesu-body img')).toHaveCount(1);
+
+	// Discard returns to the saved state; unsetting everything clears the
+	// saved appearance via the Default preset.
+	await section.getByRole('button', { name: 'Default', exact: true }).click();
+	await section.getByRole('button', { name: 'Save appearance', exact: true }).click();
+	await expect(section.getByRole('status')).toContainText('Appearance saved');
+	const cleared = await json(await request.get(`${API}/blogs`, { headers: account.headers }));
+	expect(cleared.find((blog) => blog.id === account.blog.id).embed_appearance).toBeUndefined();
 });
 
 test('authenticated stored XSS stays inert through update, publish, dashboard and embed', async ({ page, context, request, account }) => {
