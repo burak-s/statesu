@@ -1193,7 +1193,13 @@
 							<details>
 								<summary>Connect your own R2 bucket</summary>
 								<div class="details-body">
-									<p class="note">In Cloudflare, create an <strong>R2 API token scoped to one single bucket</strong>, not an account-level key. The secret is stored encrypted and never shown back. Your bucket needs a public domain — that address goes below and Markdown keeps working from it.</p>
+									<aside class="note" aria-labelledby="r2-security-heading">
+										<strong id="r2-security-heading">Security: connect a dedicated media bucket</strong>
+										<p>Statesu stores your secret access key encrypted and decrypts it on the server to upload and delete media on your behalf. Credentials are never returned in API responses.</p>
+										<p>Use R2 S3 credentials with <strong>Object Read &amp; Write access to this bucket only</strong>. Never provide your Cloudflare Global API Key or account-wide credentials. A key prefix does not restrict what the credentials can access.</p>
+										<p>Use a bucket dedicated to public media, not private or unrelated files. Uploaded media is public; your bucket needs a public domain.</p>
+										<p>You can revoke these credentials in Cloudflare at any time. Revoking them stops future uploads and cleanup; already-public media may remain accessible.</p>
+									</aside>
 									<form class="stack" onsubmit={(event) => { event.preventDefault(); void createConnection(event); }}>
 										<label for="conn-name">Name (optional)</label>
 										<input id="conn-name" bind:value={connectionDraft.name} placeholder="Blog photos" />
