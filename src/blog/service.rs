@@ -3,6 +3,7 @@ use std::sync::Arc;
 use uuid::Uuid;
 
 use crate::blog::BlogRow;
+use crate::blog::appearance::{self as appearance_json, EmbedAppearance};
 use crate::blog::repo::BlogRepository;
 use crate::clock::Clock;
 use crate::error::Error;
@@ -24,6 +25,9 @@ pub struct BlogResponse {
     pub slug: String,
     pub domain: Option<String>,
     pub origins: Vec<String>,
+    /// Saved embed appearance; omitted entirely while unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embed_appearance: Option<EmbedAppearance>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -40,6 +44,8 @@ pub struct PublicBlogResponse {
     pub name: String,
     pub slug: String,
     pub domain: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub embed_appearance: Option<EmbedAppearance>,
 }
 
 /// Strict JSON request body for creating a blog.
@@ -102,6 +108,53 @@ pub struct ReplaceOriginsRequest {
     pub origins: Vec<String>,
 }
 
+/// Strict JSON request body for replacing the saved embed appearance.
+/// Replace semantics: the field must be present, an explicit `null` clears
+/// the saved appearance.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReplaceAppearanceRequest {
+    #[serde(deserialize_with = "deserialize_clearable_appearance")]
+    pub embed_appearance: Option<EmbedAppearance>,
+}
+
+/// Serde collapses `Option<Option<T>>` and defaults missing fields to
+/// `None`: without this visitor, "clear the appearance" and "omit the
+/// field" would be indistinguishable, and a PUT without the field would
+/// silently clear it.
+fn deserialize_clearable_appearance<'de, D>(
+    deserializer: D,
+) -> Result<Option<EmbedAppearance>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Visitor;
+
+    struct AppearanceVisitor;
+
+    impl<'de> Visitor<'de> for AppearanceVisitor {
+        type Value = Option<EmbedAppearance>;
+
+        fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+            formatter.write_str("an appearance document, or null to clear")
+        }
+
+        fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+
+        fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let inner = <EmbedAppearance as serde::Deserialize>::deserialize(deserializer)?;
+            Ok(Some(inner))
+        }
+    }
+
+    deserializer.deserialize_option(AppearanceVisitor)
+}
+
 /// Blog rules: field validation, domain/origin normalization, ownership and
 /// limit enforcement. Repos are injected; no globals.
 #[derive(Clone)]
@@ -141,6 +194,7 @@ impl BlogService {
             slug: request.slug.clone(),
             domain,
             origins: Vec::new(),
+            embed_appearance: None,
             created_at: now,
             updated_at: now,
         })
@@ -184,6 +238,38 @@ impl BlogService {
             .await?;
         blog.name = name;
         blog.domain = domain;
+        blog.updated_at = now;
+        self.blog_response(blog).await
+    }
+
+    /// Replaces the saved embed appearance (or clears it with `null`). The
+    /// value is validated and normalized before storage; only the appearance
+    /// and the modification timestamp change.
+    pub async fn set_appearance(
+        &self,
+        owner_id: Uuid,
+        blog_id_param: &str,
+        request: &ReplaceAppearanceRequest,
+    ) -> Result<BlogResponse, Error> {
+        let blog_id = parse_uuid_v7(blog_id_param)?;
+        let mut blog = self
+            .blogs
+            .find_for_owner(&owner_id, &blog_id)
+            .await?
+            .ok_or(Error::BlogNotFound)?;
+        let mut appearance = request.embed_appearance.clone();
+        if let Some(value) = appearance.as_mut() {
+            value.validate()?;
+        }
+        let stored = match &appearance {
+            Some(value) => Some(appearance_json::to_json(value)?),
+            None => None,
+        };
+        let now = self.clock.now();
+        self.blogs
+            .update_appearance(&blog_id, &owner_id, stored.as_deref(), now)
+            .await?;
+        blog.embed_appearance = stored;
         blog.updated_at = now;
         self.blog_response(blog).await
     }
@@ -237,6 +323,10 @@ impl BlogService {
                 name: row.name,
                 slug: row.slug,
                 domain: row.domain,
+                embed_appearance: row
+                    .embed_appearance
+                    .as_deref()
+                    .and_then(appearance_json::parse_saved),
             })
             .ok_or(Error::BlogNotFound)
     }
@@ -249,6 +339,10 @@ impl BlogService {
             name: row.name,
             slug: row.slug,
             domain: row.domain,
+            embed_appearance: row
+                .embed_appearance
+                .as_deref()
+                .and_then(appearance_json::parse_saved),
             created_at: row.created_at,
             updated_at: row.updated_at,
         })

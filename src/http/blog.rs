@@ -3,7 +3,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
 use crate::blog::service::{
-    BlogResponse, CreateBlogRequest, OriginsResponse, ReplaceOriginsRequest, UpdateBlogRequest,
+    BlogResponse, CreateBlogRequest, OriginsResponse, ReplaceAppearanceRequest,
+    ReplaceOriginsRequest, UpdateBlogRequest,
 };
 use crate::error::Error;
 use crate::http::AppState;
@@ -49,6 +50,17 @@ pub async fn delete(
         .delete_blog_with_cleanup(user.id, blog_uuid)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn set_appearance(
+    State(state): State<AppState>,
+    AuthedWriter(user): AuthedWriter,
+    Path(blog_id): Path<String>,
+    StrictJson(body): StrictJson<ReplaceAppearanceRequest>,
+) -> Result<Json<BlogResponse>, Error> {
+    Ok(Json(
+        state.blogs.set_appearance(user.id, &blog_id, &body).await?,
+    ))
 }
 
 pub async fn set_origins(

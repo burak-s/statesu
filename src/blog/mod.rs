@@ -1,3 +1,4 @@
+pub mod appearance;
 pub mod repo;
 pub mod service;
 
@@ -14,6 +15,9 @@ pub struct BlogRow {
     pub name: String,
     pub slug: String,
     pub domain: Option<String>,
+    /// Raw saved embed appearance JSON (validated at write time);
+    /// `None` means "use the built-in appearance".
+    pub embed_appearance: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -26,6 +30,7 @@ pub struct RawBlogRow {
     name: String,
     slug: String,
     domain: Option<String>,
+    embed_appearance: Option<String>,
     created_at: i64,
     updated_at: i64,
 }
@@ -38,6 +43,7 @@ impl RawBlogRow {
             name: self.name,
             slug: self.slug,
             domain: self.domain,
+            embed_appearance: self.embed_appearance,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })

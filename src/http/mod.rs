@@ -93,6 +93,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/blogs", post(blog::create).get(blog::list))
         .route("/blogs/{blog_id}", patch(blog::update).delete(blog::delete))
         .route("/blogs/{blog_id}/origins", put(blog::set_origins))
+        .route("/blogs/{blog_id}/appearance", put(blog::set_appearance))
         .route("/blogs/{blog_id}/posts", post(post::create).get(post::list))
         .route(
             "/blogs/{blog_id}/posts/{post_id}",

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 
 use common::{
     TestApp, bearer, create_blog, create_post, json_request, patch_post, register_token,
-    set_origins,
+    set_appearance, set_origins,
 };
 
 fn authed_json(method: Method, path: &str, token: &str, body: Value) -> Request<Body> {
@@ -332,6 +332,124 @@ async fn origins_are_normalized_replaced_and_validated() {
         json!(["https://x.example", "https://y.example/"]),
     )
     .await;
+}
+
+/// Saved embed appearance: replace semantics, validation, ownership scoping
+/// and that unrelated blog settings survive an appearance write.
+#[tokio::test]
+async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
+    let app = TestApp::new().await;
+    let token = register_token(&app, common::EMAIL, common::PASSWORD).await;
+    let id = create_blog(&app, &token, "Blog", "blog").await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Unset blogs carry no appearance field at all.
+    let fresh = common::authed(&app, Method::GET, "/blogs", &token).await;
+    assert!(fresh.json()[0].get("embed_appearance").is_none());
+
+    // A full document is stored, colors normalized, echoes back in blog payloads.
+    let saved = set_appearance(
+        &app,
+        &token,
+        &id,
+        json!({
+            "embed_appearance": {
+                "version": 1,
+                "colors": { "text": "#1A2B3C", "link": "#7c3aed", "background": "transparent" },
+                "typography": { "font": "serif", "body_size": 110 },
+                "layout": { "max_width": 720, "padding": 24 },
+                "decoration": { "corner_radius": 8 }
+            }
+        }),
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK, "{}", saved.text());
+    let appearance = saved.json()["embed_appearance"].clone();
+    assert_eq!(appearance["version"], 1);
+    assert_eq!(appearance["colors"]["text"], "#1a2b3c");
+    assert_eq!(appearance["colors"]["background"], "transparent");
+    assert_eq!(appearance["typography"]["font"], "serif");
+
+    let listed = common::authed(&app, Method::GET, "/blogs", &token).await;
+    assert_eq!(listed.json()[0]["embed_appearance"], appearance);
+
+    // Replace semantics: the second write fully replaces the first.
+    let replaced = set_appearance(
+        &app,
+        &token,
+        &id,
+        json!({ "embed_appearance": { "version": 1, "colors": { "link": "#0f0" } } }),
+    )
+    .await;
+    assert_eq!(
+        replaced.json()["embed_appearance"]["colors"],
+        json!({ "link": "#00ff00" })
+    );
+
+    // Explicit null clears the saved appearance.
+    let cleared = set_appearance(&app, &token, &id, json!({ "embed_appearance": null })).await;
+    assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text());
+    assert!(cleared.json().get("embed_appearance").is_none());
+
+    // Out-of-range and malformed values are rejected at validation.
+    for bad in [
+        json!({ "embed_appearance": { "version": 2 } }),
+        json!({ "embed_appearance": { "version": 1, "typography": { "body_size": 500 } } }),
+        json!({ "embed_appearance": { "version": 1, "colors": { "link": "red" } } }),
+        json!({ "embed_appearance": { "version": 1, "layout": { "max_width": 100 } } }),
+    ] {
+        set_appearance(&app, &token, &id, bad)
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid input");
+    }
+    // Shape violations (unknown or missing fields) are rejected at the body.
+    for bad in [
+        json!({ "embed_appearance": { "version": 1, "css": "body{}" } }),
+        json!({ "embed_appearance": {} }),
+        json!({}),
+    ] {
+        set_appearance(&app, &token, &id, bad)
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid body");
+    }
+
+    // Ownership is enforced; unknown and foreign blogs read the same.
+    let other = register_token(&app, "other@example.com", common::PASSWORD).await;
+    let other_id = create_blog(&app, &other, "Other", "other").await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    set_appearance(&app, &other, &id, json!({ "embed_appearance": null }))
+        .await
+        .assert_error(StatusCode::NOT_FOUND, "blog not found");
+    set_appearance(&app, &token, &other_id, json!({ "embed_appearance": null }))
+        .await
+        .assert_error(StatusCode::NOT_FOUND, "blog not found");
+
+    // Appearance writes never disturb unrelated settings.
+    set_origins(&app, &token, &id, json!(["https://example.com"])).await;
+    set_appearance(
+        &app,
+        &token,
+        &id,
+        json!({ "embed_appearance": { "version": 1 } }),
+    )
+    .await
+    .status_check(StatusCode::OK);
+    let reread = common::authed(&app, Method::GET, "/blogs", &token).await;
+    let blog = reread
+        .json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|blog| blog["slug"] == "blog")
+        .unwrap()
+        .clone();
+    assert_eq!(blog["origins"], json!(["https://example.com"]));
+    assert_eq!(blog["name"], "Blog");
+    assert_eq!(blog["embed_appearance"]["version"], 1);
 }
 
 #[tokio::test]

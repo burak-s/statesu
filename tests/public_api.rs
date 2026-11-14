@@ -5,7 +5,8 @@ use axum::http::{Method, Request, StatusCode};
 use serde_json::json;
 
 use common::{
-    EMAIL, PASSWORD, TestApp, create_blog, create_post, patch_post, register_token, set_origins,
+    EMAIL, PASSWORD, TestApp, create_blog, create_post, patch_post, register_token,
+    set_origins,
 };
 
 const SITE_ORIGIN: &str = "https://site.example";
@@ -175,6 +176,81 @@ async fn public_blog_profile_is_safe_for_delivery() {
     assert_eq!(body["name"], "Public Blog");
     assert!(body.get("owner_id").is_none());
     assert!(body.get("origins").is_none());
+}
+
+/// The public profile carries the saved embed appearance so embeds can
+/// style themselves without any management credentials. Unset blogs omit
+/// the field entirely.
+#[tokio::test]
+async fn public_blog_profile_delivers_saved_appearance() {
+    let app = TestApp::new().await;
+    let token = register_token(&app, EMAIL, PASSWORD).await;
+    let blog_id = create_blog(&app, &token, "Styled Blog", "styled")
+        .await
+        .json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    set_origins(&app, &token, &blog_id, json!([SITE_ORIGIN])).await;
+
+    // Unset: no appearance field at all.
+    let unset = app
+        .send(common::empty(Method::GET, "/public/blogs/styled"))
+        .await;
+    assert_eq!(unset.status, StatusCode::OK);
+    assert!(unset.json().get("embed_appearance").is_none());
+
+    common::set_appearance(
+        &app,
+        &token,
+        &blog_id,
+        json!({
+            "embed_appearance": {
+                "version": 1,
+                "colors": { "text": "#ABCDEF", "link": "#7c3aed" },
+                "typography": { "font": "serif" }
+            }
+        }),
+    )
+    .await
+    .status_check(StatusCode::OK);
+
+    let styled = app
+        .send(common::empty(Method::GET, "/public/blogs/styled"))
+        .await;
+    assert_eq!(styled.status, StatusCode::OK, "{}", styled.text());
+    let body = styled.json();
+    assert_eq!(body["embed_appearance"]["version"], 1);
+    assert_eq!(body["embed_appearance"]["colors"]["text"], "#abcdef");
+    assert_eq!(body["embed_appearance"]["typography"]["font"], "serif");
+    // Management-only data still never reaches delivery.
+    assert!(body.get("owner_id").is_none());
+    assert!(body.get("origins").is_none());
+
+    // Post and feed payloads stay untouched by appearance.
+    create_post(
+        &app,
+        &token,
+        &blog_id,
+        json!({
+            "slug": "styled-post",
+            "title": "Styled",
+            "content_markdown": "Hi",
+            "status": "published"
+        }),
+    )
+    .await;
+    let post = app
+        .send(common::empty(
+            Method::GET,
+            "/public/blogs/styled/posts/styled-post",
+        ))
+        .await;
+    assert!(post.json().get("embed_appearance").is_none());
+    let feed = app
+        .send(common::empty(Method::GET, "/public/blogs/styled/posts"))
+        .await;
+    assert!(feed.json().get("embed_appearance").is_none());
 }
 
 #[tokio::test]

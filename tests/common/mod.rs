@@ -709,6 +709,18 @@ pub async fn set_origins(
     app.send(Request::from_parts(parts, body)).await
 }
 
+pub async fn set_appearance(
+    app: &TestApp,
+    token: &str,
+    blog_id: &str,
+    body: Value,
+) -> TestResponse {
+    let request = json_request(Method::PUT, &format!("/blogs/{blog_id}/appearance"), body);
+    let (mut parts, body) = request.into_parts();
+    parts.headers.insert("authorization", bearer(token));
+    app.send(Request::from_parts(parts, body)).await
+}
+
 pub async fn authed(app: &TestApp, method: Method, path: &str, token: &str) -> TestResponse {
     let request = empty(method, path);
     let (mut parts, body) = request.into_parts();

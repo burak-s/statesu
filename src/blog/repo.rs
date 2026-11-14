@@ -47,7 +47,7 @@ impl BlogRepository {
 
     pub async fn find_by_slug(&self, slug: &str) -> Result<Option<BlogRow>, Error> {
         sqlx::query_as::<_, RawBlogRow>(
-            "SELECT id, owner_id, name, slug, domain, created_at, updated_at \
+            "SELECT id, owner_id, name, slug, domain, embed_appearance, created_at, updated_at \
              FROM blogs WHERE slug = ?",
         )
         .bind(slug)
@@ -74,7 +74,7 @@ impl BlogRepository {
         id: &uuid::Uuid,
     ) -> Result<Option<BlogRow>, Error> {
         sqlx::query_as::<_, RawBlogRow>(
-            "SELECT id, owner_id, name, slug, domain, created_at, updated_at \
+            "SELECT id, owner_id, name, slug, domain, embed_appearance, created_at, updated_at \
              FROM blogs WHERE id = ? AND owner_id = ?",
         )
         .bind(id.to_string())
@@ -88,7 +88,7 @@ impl BlogRepository {
 
     pub async fn list_for_owner(&self, owner_id: &uuid::Uuid) -> Result<Vec<BlogRow>, Error> {
         let rows = sqlx::query_as::<_, RawBlogRow>(
-            "SELECT id, owner_id, name, slug, domain, created_at, updated_at \
+            "SELECT id, owner_id, name, slug, domain, embed_appearance, created_at, updated_at \
              FROM blogs WHERE owner_id = ? ORDER BY created_at DESC, id DESC",
         )
         .bind(owner_id.to_string())
@@ -135,6 +135,32 @@ impl BlogRepository {
         .execute(&self.pool)
         .await
         .map_err(|err| insert_error(err, "blog update"))?;
+        if result.rows_affected() != 1 {
+            return Err(Error::BlogNotFound);
+        }
+        Ok(())
+    }
+
+    /// Replaces the saved embed appearance (JSON) or clears it; ownership is
+    /// part of the SQL predicate like every other blog mutation.
+    pub async fn update_appearance(
+        &self,
+        id: &uuid::Uuid,
+        owner_id: &uuid::Uuid,
+        appearance: Option<&str>,
+        updated_at: i64,
+    ) -> Result<(), Error> {
+        let result = sqlx::query(
+            "UPDATE blogs SET embed_appearance = ?, updated_at = ? \
+             WHERE id = ? AND owner_id = ?",
+        )
+        .bind(appearance)
+        .bind(updated_at)
+        .bind(id.to_string())
+        .bind(owner_id.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(|_| failed("blog appearance update"))?;
         if result.rows_affected() != 1 {
             return Err(Error::BlogNotFound);
         }
