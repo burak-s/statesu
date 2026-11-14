@@ -452,6 +452,160 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
     assert_eq!(blog["embed_appearance"]["version"], 1);
 }
 
+/// Cross-checks the management endpoint against the Rust validator for every
+/// numeric token at both bounds and just outside them, plus wrong wire types,
+/// so a frontend edit cannot drift past the backend undetected.
+#[tokio::test]
+async fn embed_appearance_numeric_bounds_and_wire_types_match_the_validator() {
+    let app = TestApp::new().await;
+    let token = register_token(&app, common::EMAIL, common::PASSWORD).await;
+    let id = create_blog(&app, &token, "Bounds", "bounds").await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    let fields = [
+        ("typography", "body_size", 75, 200),
+        ("typography", "heading_scale", 100, 225),
+        ("typography", "line_height", 100, 250),
+        ("layout", "max_width", 320, 1200),
+        ("layout", "padding", 0, 96),
+        ("layout", "spacing", 0, 96),
+        ("decoration", "border_width", 0, 8),
+        ("decoration", "corner_radius", 0, 32),
+    ];
+    for (group, key, min, max) in fields {
+        let document = |value: serde_json::Value| {
+            json!({
+                "embed_appearance": {
+                    "version": 1,
+                    group.clone(): { key.clone(): value }
+                }
+            })
+        };
+        set_appearance(&app, &token, &id, document(json!(min)))
+            .await
+            .status_check(StatusCode::OK);
+        set_appearance(&app, &token, &id, document(json!(max)))
+            .await
+            .status_check(StatusCode::OK);
+        // Values outside the integer wire type (strings, floats, negatives)
+        // fail deserialization; in-type overflow fails validation.
+        let outside_error = if min == 0 {
+            "invalid body"
+        } else {
+            "invalid input"
+        };
+        set_appearance(&app, &token, &id, document(json!(min - 1)))
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, outside_error);
+        set_appearance(&app, &token, &id, document(json!(max + 1)))
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid input");
+        set_appearance(&app, &token, &id, document(json!("100")))
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid body");
+        set_appearance(&app, &token, &id, document(json!(true)))
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid body");
+        set_appearance(&app, &token, &id, document(json!([100])))
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid body");
+        set_appearance(&app, &token, &id, document(json!(min as f64 + 0.5)))
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid body");
+    }
+}
+
+/// A rejected appearance write must never modify the stored value, and blog
+/// management writes must never touch (or clear) the saved appearance.
+#[tokio::test]
+async fn embed_appearance_is_immutable_under_rejections_and_unrelated_writes() {
+    let app = TestApp::new().await;
+    let token = register_token(&app, common::EMAIL, common::PASSWORD).await;
+    let id = create_blog(&app, &token, "Stable", "stable").await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let appearance = json!({
+        "version": 1,
+        "colors": { "text": "#123456", "link": "#7c3aed" },
+        "layout": { "max_width": 720 }
+    });
+    set_appearance(&app, &token, &id, json!({ "embed_appearance": appearance }))
+        .await
+        .status_check(StatusCode::OK);
+
+    for bad in [
+        json!({ "embed_appearance": { "version": 2 } }),
+        json!({ "embed_appearance": { "version": 1, "colors": { "link": "red" } } }),
+    ] {
+        set_appearance(&app, &token, &id, bad)
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid input");
+        let listed = common::authed(&app, Method::GET, "/blogs", &token).await;
+        assert_eq!(
+            listed.json()[0]["embed_appearance"],
+            appearance,
+            "a rejected write must not change the stored value"
+        );
+    }
+    for bad in [
+        json!({ "embed_appearance": { "version": 1, "typography": { "body_size": 500 } } }),
+        json!({ "embed_appearance": { "version": 1, "colors": { "link": "red" } } }),
+    ] {
+        set_appearance(&app, &token, &id, bad)
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid input");
+        let listed = common::authed(&app, Method::GET, "/blogs", &token).await;
+        assert_eq!(
+            listed.json()[0]["embed_appearance"],
+            appearance,
+            "a rejected write must not change the stored value"
+        );
+    }
+    for bad in [json!({ "embed_appearance": { "version": 1, "css": "body{}" } })] {
+        set_appearance(&app, &token, &id, bad)
+            .await
+            .assert_error(StatusCode::BAD_REQUEST, "invalid body");
+        let listed = common::authed(&app, Method::GET, "/blogs", &token).await;
+        assert_eq!(
+            listed.json()[0]["embed_appearance"],
+            appearance,
+            "a rejected write must not change the stored value"
+        );
+    }
+
+    // Blog management writes leave the appearance alone.
+    app.send(authed_json(
+        Method::PATCH,
+        &format!("/blogs/{id}"),
+        &token,
+        json!({ "name": "Renamed", "domain": null }),
+    ))
+    .await
+    .status_check(StatusCode::OK);
+    let reread = common::authed(&app, Method::GET, "/blogs", &token).await;
+    assert_eq!(reread.json()[0]["name"], "Renamed");
+    assert_eq!(
+        reread.json()[0]["embed_appearance"]["colors"]["text"],
+        "#123456"
+    );
+
+    // Appearance writes leave blog management fields alone.
+    set_appearance(
+        &app,
+        &token,
+        &id,
+        json!({ "embed_appearance": { "version": 1 } }),
+    )
+    .await
+    .status_check(StatusCode::OK);
+    let final_list = common::authed(&app, Method::GET, "/blogs", &token).await;
+    assert_eq!(final_list.json()[0]["name"], "Renamed");
+    assert_eq!(final_list.json()[0]["domain"], Value::Null);
+}
+
 #[tokio::test]
 async fn post_lifecycle_covers_draft_publish_withdraw_and_delete() {
     let app = TestApp::new().await;

@@ -61,7 +61,7 @@
 			'- First list item\n- Second list item\n\n' +
 			'> A quoted line of text\n\n' +
 			'```js\nconst ready = true;\n```\n\n' +
-			'![Sample image](https://media.example.com/statesu/sample/source.webp)'
+			`![Sample image](${new URL('/embed-preview.svg', window.location.origin).href})`
 	};
 
 	const SAMPLE_FEED = [
@@ -217,7 +217,7 @@
 
 	/** @param {any} appearance @returns {any} */
 	function normalize(appearance) {
-		const parsed = parseAppearance(appearance ?? undefined);
+		const parsed = parseAppearance(toJsonSafe(appearance) ?? undefined);
 		return parsed ?? null;
 	}
 

@@ -712,6 +712,17 @@ async fn read_only_pats_cannot_write() {
         )
         .await;
     assert_eq!(listed.json().as_array().map(Vec::len), Some(1));
+
+    // The appearance endpoint follows the same read/write split: GET works
+    // for read-only tokens, PUT refuses them.
+    common::set_appearance(
+        &app,
+        &read_pat,
+        &blog_id,
+        serde_json::json!({ "embed_appearance": null }),
+    )
+    .await
+    .assert_error(StatusCode::FORBIDDEN, "forbidden");
     let _ = blog_id;
 }
 

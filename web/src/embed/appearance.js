@@ -243,20 +243,19 @@ ${Object.entries(HEADING_SIZES).map(([tag, size]) =>
 .statesu-v2 .statesu-body img { max-width: 100%; height: auto; display: block; margin: 1.25em auto; }
 .statesu-v2 .statesu-body img.linked-in { display: inline; margin: 0; }
 .statesu-v2 .statesu-body pre { overflow-x: auto; }
-/* Content rhythm: paragraph, list, quote and code spacing follow the
-   spacing token; 1em is the built-in UA block margin, so unset stays stock.
-   Links keep UA behavior when no token exists — only unvisited links are
-   tokenized, so visited styling is never overridden. */
+/* Revert to the browser's own margins when unset, including the zero
+   margins on nested lists. Configured spacing applies to every block. */
 .statesu-v2 .statesu-body p,
 .statesu-v2 .statesu-body ul,
 .statesu-v2 .statesu-body ol,
 .statesu-v2 .statesu-body blockquote,
 .statesu-v2 .statesu-body pre {
-	margin-block: var(--statesu-spacing, var(--statesu-internal-spacing, 1em));
+	margin-block: var(--statesu-spacing, var(--statesu-internal-spacing, revert));
 }
-.statesu-v2 .statesu-body a:link {
-	color: var(--statesu-link-color, var(--statesu-internal-link, LinkText));
-	text-decoration: underline;
+/* Both link states follow configured colors. Without a token, revert
+   preserves native unvisited/visited colors instead of forcing one color. */
+.statesu-v2 .statesu-body a:any-link {
+	color: var(--statesu-link-color, var(--statesu-internal-link, revert));
 }
 .statesu-v2 .statesu-body a { text-decoration: underline; }
 .statesu-v2 .statesu-announcement + .statesu-announcement {

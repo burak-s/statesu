@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <title>Sample landscape</title>
+  <desc>Layered mountains and a sun demonstrate responsive image sizing in the embed preview.</desc>
+  <rect width="960" height="540" fill="#e0f2fe"/>
+  <circle cx="740" cy="135" r="62" fill="#fbbf24"/>
+  <path d="M0 420 240 140 480 420 650 240 960 490V540H0Z" fill="#94a3b8"/>
+  <path d="M0 510 260 330 520 510 760 310 960 460V540H0Z" fill="#475569"/>
+</svg>

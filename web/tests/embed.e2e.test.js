@@ -329,7 +329,7 @@ const mediaPost = {
 	]
 };
 
-async function bootV2({ html, fetchBehavior, scriptAttrs } = {}) {
+async function bootV2({ html, fetchBehavior, scriptAttrs, timeoutMs = 40 } = {}) {
 	const dom = new JSDOM(html ?? '<html><body><div id="t">initial</div></body></html>', { url: 'https://site.example/blog/test' });
 	const window = dom.window;
 	window.fetch = fetchBehavior;
@@ -342,7 +342,7 @@ async function bootV2({ html, fetchBehavior, scriptAttrs } = {}) {
 		script.setAttribute(k, v);
 	}
 	window.document.body.appendChild(script);
-	v2.init(window, { timeoutMs: 40 });
+	v2.init(window, { timeoutMs });
 	await new Promise((resolve) => setTimeout(resolve, 60));
 	const target = window.document.getElementById('t');
 	const shadow = target.querySelector('[data-statesu-v2-host]')?.shadowRoot ?? null;
@@ -527,4 +527,140 @@ test('v2 feed entries inherit the appearance from the feed root', async () => {
 	const root = shadow.querySelector('.statesu-v2');
 	assert.equal(varsOf(root)['--statesu-internal-link'], '#7c3aed');
 	assert.equal(shadow.querySelectorAll('.statesu-announcement').length, 2);
+});
+
+// Delivery-order tests: the appearance and the content travel in parallel,
+// under one deadline, and content must never wait on the styling side.
+
+/**
+ * Boots with the chosen endpoint held behind a manual gate while the other
+ * answers immediately. The 40ms boot deadline still applies, so the gated
+ * call must be released before it, and tests inspect the embed between
+ * releases.
+ */
+async function bootGated({ gate = 'profile', scriptAttrs, timeoutMs } = {}) {
+	let releaseGate = () => {};
+	let gated = false;
+	const requested = [];
+	const signals = new Map();
+	const fetchBehavior = (api, { signal } = {}) => {
+		const url = String(api);
+		requested.push(url);
+		if (signal) signals.set(url, signal);
+		const gatedEndpoint = gate === 'profile'
+			? url.endsWith('/public/blogs/burak')
+			: url.endsWith('/posts/test');
+		if (gatedEndpoint) {
+			gated = true;
+			return new Promise((resolve) => { releaseGate = resolve; });
+		}
+		return gate === 'profile' ? postResponse : profileResponse;
+	};
+	const booted = await bootV2({ scriptAttrs, fetchBehavior, timeoutMs });
+	return { ...booted, release: (payload) => { assert.ok(gated, 'the gated call was made'); releaseGate(payload); }, requested, signals };
+}
+
+const POST_MATCHER = '/posts/test';
+const PROFILE_MATCHER = '/public/blogs/burak';
+const postResponse = { ok: true, status: 200, type: 'basic', json: async () => mediaPost };
+const profileResponse = { ok: true, status: 200, type: 'basic', json: async () => ({ embed_appearance: appearance }) };
+
+async function settle() {
+	await new Promise((resolve) => setTimeout(resolve, 30));
+}
+
+test('v2 content renders while the appearance gate is still closed', async () => {
+	// A generous deadline: the gate release must land before it, so this
+	// test isolates ordering rather than the timeout path.
+	const { shadow, release } = await bootGated({ gate: 'profile', timeoutMs: 200 });
+	await settle();
+	assert.match(shadow.textContent, /Media Post/, 'content does not wait for styling');
+	assert.equal(Object.keys(varsOf(shadow.querySelector('.statesu-v2'))).length, 0);
+	// Late arrival still styles everything already rendered.
+	release(profileResponse);
+	await settle();
+	const vars = varsOf(shadow.querySelector('.statesu-v2'));
+	assert.equal(vars['--statesu-internal-link'], '#7c3aed');
+});
+
+test('v2 applies tokens that arrive before the content', async () => {
+	// The profile answers instantly; the content waits behind the gate.
+	const { shadow, release } = await bootGated({ gate: 'post', timeoutMs: 200 });
+	await settle();
+	assert.equal(Object.keys(varsOf(shadow.querySelector('.statesu-v2'))).length, 12);
+	release(postResponse);
+	await settle();
+	assert.match(shadow.textContent, /Media Post/);
+	assert.equal(varsOf(shadow.querySelector('.statesu-v2'))['--statesu-internal-link'], '#7c3aed');
+});
+
+test('v2 appearance deadline cancels the styling request without touching content', async () => {
+	// Default 40ms deadline: bootV2 settles past it, so the abort has fired
+	// by the time the test inspects the embed.
+	const { shadow, signals, release, requested } = await bootGated({ gate: 'profile' });
+	await settle();
+	assert.match(shadow.textContent, /Media Post/);
+	const profileUrl = requested.find((url) => url.endsWith(PROFILE_MATCHER));
+	assert.ok(profileUrl, 'the appearance request carries a signal');
+	assert.equal(signals.get(profileUrl).aborted, true, 'the deadline aborts the styling request');
+	assert.equal(Object.keys(varsOf(shadow.querySelector('.statesu-v2'))).length, 0);
+	// A late gate release after the abort changes nothing.
+	release(profileResponse);
+	await settle();
+	assert.equal(Object.keys(varsOf(shadow.querySelector('.statesu-v2'))).length, 0);
+});
+
+test('v2 appearance failures are silent: network, status, unparsable and unsupported', async () => {
+	for (const profileResponse of [
+		{ ok: false, status: 500, type: 'basic', json: async () => ({}) },
+		{ ok: false, status: 404, type: 'basic', json: async () => ({}) },
+		{ ok: true, status: 200, type: 'basic', json: async () => { throw new SyntaxError('bad'); } },
+		{ ok: true, status: 200, type: 'basic', json: async () => 'not an object' },
+		{ ok: true, status: 200, type: 'basic', json: async () => ({ embed_appearance: { version: 9 } }) }
+	]) {
+		const { shadow } = await bootV2({
+			fetchBehavior: async (api) => (String(api).endsWith('/posts/test')
+				? { ok: true, status: 200, type: 'basic', json: async () => mediaPost }
+				: profileResponse)
+		});
+		assert.match(shadow.textContent, /Media Post/);
+		assert.equal(Object.keys(varsOf(shadow.querySelector('.statesu-v2'))).length, 0);
+	}
+});
+
+test('v2 feed load-more reuses one appearance request', async () => {
+	// The embed always requests size=20; a total above one page keeps the
+	// load-more button alive after the first page.
+	const pages = {
+		1: { items: [{ title: 'One', content_markdown: 'a' }], page: 1, size: 20, total: 21 },
+		2: { items: [{ title: 'Two', content_markdown: 'b' }], page: 2, size: 20, total: 21 }
+	};
+	const requestedPages = [];
+	let appearanceRequests = 0;
+	const { shadow, window } = await bootV2({
+		scriptAttrs: { 'data-mode': 'feed', 'data-hide-title': '' },
+		fetchBehavior: async (api) => {
+			const url = String(api);
+			const page = url.match(/page=(\d+)/);
+			if (page) {
+				requestedPages.push(Number(page[1]));
+				return { ok: true, status: 200, type: 'basic', json: async () => pages[Number(page[1])] };
+			}
+			appearanceRequests += 1;
+			return { ok: true, status: 200, type: 'basic', json: async () => ({ embed_appearance: appearance }) };
+		}
+	});
+	await settle();
+	// First page renders with a load-more button (total 21 > 1 × 20).
+	const more = shadow.querySelector('.statesu-more');
+	assert.ok(more, 'a load-more button exists');
+	more.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+	await settle();
+	// Titles are hidden in this feed; the second page's body 'b' shows up.
+	assert.match(shadow.textContent, /\bb\b/, 'page two rendered');
+	assert.equal(shadow.querySelectorAll('.statesu-announcement').length, 2, 'both entries rendered');
+	const root = shadow.querySelector('.statesu-v2');
+	assert.equal(varsOf(root)['--statesu-internal-link'], '#7c3aed', 'appearance still applies');
+	assert.deepEqual(requestedPages, [1, 2], 'both pages loaded');
+	assert.equal(appearanceRequests, 1, 'one appearance request total');
 });

@@ -285,7 +285,9 @@ test('the appearance editor saves typed values and the preview matches the embed
 	await expect(previewTitle).toHaveText('Sample post');
 	await expect.poll(() => previewTitle.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(18, 52, 86)');
 	await expect(section.locator('.preview-host .statesu-body h2')).toHaveText('Section heading');
-	await expect(section.locator('.preview-host .statesu-body img')).toHaveCount(1);
+	const previewImage = section.locator('.preview-host .statesu-body img');
+	await previewImage.scrollIntoViewIfNeeded();
+	await expect.poll(() => previewImage.evaluate((image) => image.complete && image.naturalWidth > 0)).toBe(true);
 
 	// The feed sample renders announcement entries with the divider.
 	await section.getByRole('button', { name: 'Feed', exact: true }).click();
@@ -300,6 +302,164 @@ test('the appearance editor saves typed values and the preview matches the embed
 	await expect(section.getByRole('status')).toContainText('Appearance saved');
 	const cleared = await json(await request.get(`${API}/blogs`, { headers: account.headers }));
 	expect(cleared.find((blog) => blog.id === account.blog.id).embed_appearance).toBeUndefined();
+});
+
+test('inherited saved fonts stay clean after opening and discarding edits', async ({ page, request, account }) => {
+	await signIn(page, account);
+	for (const typography of [{ font: 'inherit' }, { font: 'inherit', body_size: 110 }]) {
+		await json(await request.put(`${API}/blogs/${account.blog.id}/appearance`, {
+			headers: account.headers,
+			data: { embed_appearance: { version: 1, typography } }
+		}));
+		await page.goto(`${API}/dashboard`);
+		await page.getByRole('button', { name: 'Settings for Browser blog', exact: true }).click();
+		const section = page.locator('.appearance');
+		const save = section.getByRole('button', { name: 'Save appearance', exact: true });
+		const discard = section.getByRole('button', { name: 'Discard changes', exact: true });
+		await expect(save).toBeDisabled();
+		await expect(discard).toBeDisabled();
+		const size = section.getByLabel('Body size (%)', { exact: true });
+		await size.fill('125');
+		await expect(save).toBeEnabled();
+		await discard.click();
+		await expect(size).toHaveValue(typography.body_size ? '110' : '');
+		await expect(save).toBeDisabled();
+		await expect(discard).toBeDisabled();
+		await expect(section.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+	}
+});
+
+test('unconfigured v2 lists keep native nested spacing and configured links cover both states', async ({ page, request, account }) => {
+	await createPost(request, account, 'nested', {
+		status: 'published',
+		content_markdown: '- Parent\n  - Child\n\n1. Parent\n   1. Child\n\n[Link](https://example.com)'
+	});
+	await page.goto(postUrl(account, 'nested', { v: '2' }));
+	const nested = page.locator('.statesu-body ul ul, .statesu-body ol ol');
+	await expect(nested).toHaveCount(2);
+	for (const list of await nested.all()) {
+		await expect(list).toHaveCSS('margin-block-start', '0px');
+		await expect(list).toHaveCSS('margin-block-end', '0px');
+	}
+	const link = page.locator('.statesu-body a');
+	await expect(link).toHaveCSS('color', 'rgb(0, 0, 238)');
+	// Browser privacy deliberately hides visited colors from computed style.
+	// Check the actual rule covers :any-link (both :link and :visited), then
+	// verify that rule's saved color and host override in the real bundle.
+	const selector = await link.evaluate((element) => {
+		const sheet = element.getRootNode().querySelector('style').sheet;
+		return [...sheet.cssRules].find((rule) => rule.style?.color.includes('--statesu-link-color'))?.selectorText;
+	});
+	expect(selector).toBe('.statesu-v2 .statesu-body a:any-link');
+	await json(await request.put(`${API}/blogs/${account.blog.id}/appearance`, {
+		headers: account.headers,
+		data: { embed_appearance: { version: 1, colors: { link: '#123456' }, layout: { spacing: 24 } } }
+	}));
+	await page.reload();
+	await expect(link).toHaveCSS('color', 'rgb(18, 52, 86)');
+	for (const list of await nested.all()) await expect(list).toHaveCSS('margin-block-start', '24px');
+	await page.goto(postUrl(account, 'nested', { v: '2', style: '#statesu-post { --statesu-link-color: #00ff00; }' }));
+	await expect(link).toHaveCSS('color', 'rgb(0, 255, 0)');
+});
+
+test('the dashboard preview and the real embed share one computed style', async ({ page, request, account }) => {
+	await json(await request.put(`${API}/blogs/${account.blog.id}/appearance`, {
+		headers: account.headers,
+		data: {
+			embed_appearance: {
+				version: 1,
+				colors: { text: '#1a2b3c', link: '#7c3aed', muted: '#6e6e6e', background: '#ffffff' },
+				typography: { font: 'serif', body_size: 110, heading_scale: 120, line_height: 180 },
+				layout: { max_width: 720, padding: 24, spacing: 16 },
+				decoration: { border_width: 1, corner_radius: 8 }
+			}
+		}
+	}));
+	// The created post mirrors the editor's sample structures exactly, so
+	// both surfaces render the same elements under the same tokens.
+	await createPost(request, account, 'parity', {
+		status: 'published',
+		content_markdown:
+			'A paragraph with a [link](https://example.com), some **bold** and *emphasis* text.\n\n' +
+			'## Section heading\n\n' +
+			'- First list item\n- Second list item\n\n' +
+			'> A quoted line of text\n\n' +
+			'```js\nconst ready = true;\n```\n\n' +
+			`![Sample image](${API}/embed-preview.svg)`
+	});
+
+	const selectors = [
+		'.statesu-title', '.statesu-body p', '.statesu-body ul', '.statesu-body blockquote',
+		'.statesu-body pre', '.statesu-body a', '.statesu-body img'
+	];
+	const properties = ['color', 'fontFamily', 'fontSize', 'lineHeight', 'marginTop', 'marginBottom', 'paddingTop', 'maxWidth', 'borderRadius'];
+	async function capture(locator) {
+		return locator.evaluate((host, { selectors, properties }) => {
+			const read = (element) => {
+				const style = getComputedStyle(element);
+				return Object.fromEntries(properties.map((name) => [name, style[name]]));
+			};
+			return Object.fromEntries(selectors.map((selector) => {
+				const element = host.shadowRoot.querySelector(selector);
+				return [selector, element ? read(element) : null];
+			}));
+		}, { selectors, properties });
+	}
+
+	await signIn(page, account);
+	await page.getByRole('button', { name: 'Settings for Browser blog', exact: true }).click();
+	// The preview shadow tree is built in an effect after mount; wait for
+	// its content before measuring.
+	await expect(page.locator('.preview-host .statesu-title')).toHaveText('Sample post');
+	const previewStyles = await capture(page.locator('.preview-host'));
+
+	await page.goto(postUrl(account, 'parity', { v: '2' }));
+	// The shadow root lives on the embed's host child, not on the target.
+	await expect(page.locator('.statesu-title')).toHaveText('Post parity');
+	const embedStyles2 = await capture(page.locator('[data-statesu-v2-host]'));
+	expect(embedStyles2).toEqual(previewStyles);
+
+	// Shadow isolation: a host rule targeting the embed's internals cannot
+	// pierce the shadow root, while a variable on the target still inherits.
+	await page.goto(postUrl(account, 'parity', {
+		v: '2',
+		style: '#statesu-post { --statesu-text-color: #00aa00; } #statesu-post p { color: #ff00ff !important; }'
+	}));
+	const paragraph = page.locator('.statesu-body p').first();
+	await expect(paragraph).toHaveText(/A paragraph/);
+	await expect.poll(() => paragraph.evaluate((el) => getComputedStyle(el).color)).toBe('rgb(0, 170, 0)');
+});
+
+test('the themed embed holds together on narrow viewports', async ({ page, request, account }) => {
+	await json(await request.put(`${API}/blogs/${account.blog.id}/appearance`, {
+		headers: account.headers,
+		data: {
+			embed_appearance: {
+				version: 1,
+				layout: { max_width: 720, padding: 24, spacing: 16 },
+				decoration: { border_width: 1, corner_radius: 8 }
+			}
+		}
+	}));
+	await createPost(request, account, 'narrow', {
+		status: 'published',
+		content_markdown: `![Sample image](${API}/embed-preview.svg)\n\n- First list item\n- Second list item`
+	});
+	await page.setViewportSize({ width: 360, height: 720 });
+	await page.goto(postUrl(account, 'narrow', { v: '2' }));
+	const frame = page.locator('.statesu-v2');
+	await expect(frame.locator('img')).toHaveCount(1);
+	await expect.poll(() => frame.evaluate((element) => ({
+		scroll: element.scrollWidth,
+		client: element.clientWidth,
+		padding: getComputedStyle(element).paddingLeft
+	}))).toEqual({ scroll: expect.any(Number), client: expect.any(Number), padding: '24px' });
+	const overflow = await frame.evaluate((element) => element.scrollWidth - element.clientWidth);
+	expect(overflow).toBeLessThanOrEqual(1);
+	const image = frame.locator('img');
+	await image.scrollIntoViewIfNeeded();
+	await expect.poll(() => image.evaluate((img) => img.naturalWidth > 0)).toBe(true);
+	await expect.poll(() => image.evaluate((img) => img.clientWidth <= img.closest('article').clientWidth)).toBe(true);
 });
 
 test('authenticated stored XSS stays inert through update, publish, dashboard and embed', async ({ page, context, request, account }) => {
