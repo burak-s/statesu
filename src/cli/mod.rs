@@ -1001,17 +1001,19 @@ async fn set_status(authed: &Authed, target: &str, status: &str) -> Result<(), C
         status: Some(status.to_owned()),
         ..Default::default()
     };
-    let _ = authed
+    // Announce with the patched response: the pre-patch record still
+    // carries the old status and would label a publish as a draft.
+    let patched = authed
         .api
         .patch_post(&authed.pat, &blog_id, &post.id, &patch)
         .await?;
     announce(
-        if status == STATUS_PUBLISHED {
+        if patched.status == STATUS_PUBLISHED {
             "Published"
         } else {
             "Unpublished"
         },
-        &post,
+        &patched,
     );
     Ok(())
 }
