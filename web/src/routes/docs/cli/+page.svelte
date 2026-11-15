@@ -9,10 +9,7 @@ cargo build --release --locked --bin stscli
 mkdir -p ~/.local/bin
 cp target/release/stscli ~/.local/bin/
 stscli --help`;
-	const token = `export STATESU_SERVER=https://statesu.com
-# Bash: enter a dashboard token without saving it in shell history.
-read -r -s -p 'API token: ' STATESU_TOKEN; printf '\\n'
-export STATESU_TOKEN
+	const token = `export STATESU_TOKEN=…   # dashboard API token; prefer your secret manager
 stscli whoami`;
 </script>
 
@@ -37,20 +34,28 @@ stscli whoami`;
 
 <section>
 	<h2>2. Connect your account</h2>
-	<p><a href="/dashboard">Register in the dashboard</a> and verify your email. Run login to open the website, sign in (including Turnstile when enabled), and approve CLI access. Your browser returns a one-time code to the CLI, which securely exchanges it for a write-capable token and saves it in your user configuration directory. No password or token is entered in the terminal.</p>
+	<p><a href="/dashboard">Register in the dashboard</a> and verify your email. Run login to open the website, sign in and approve CLI access. Your browser returns a one-time code to the CLI, which exchanges it for a write-capable token and saves it in your user configuration directory. No password or token is entered in the terminal.</p>
 	<Terminal code={'stscli login\nstscli whoami'} />
 	<p>The legacy <code>statesu-cli</code> command remains available for compatibility. Both commands share the same saved connection settings.</p>
-	<p>The default server is <code>https://statesu.com</code>. For a self-hosted deployment, pass <code>--server https://your-host</code> or set <code>STATESU_SERVER</code>. Login remembers the chosen server.</p>
+	<p>The default server is <code>https://statesu.com</code>; pass <code>--server https://your-host</code> to point the CLI elsewhere. Login remembers the chosen server.</p>
 	<p>If the browser does not open, visit the printed URL on the same computer within five minutes. Only approve requests you started yourself. SSH use requires forwarding the printed loopback port; otherwise use a provisioned token for automation.</p>
 	<h3>Automation</h3>
-	<p>For headless tools, create a write-capable token in the dashboard's <strong>API tokens</strong> and use an environment variable without saving it to disk:</p>
+	<p>For headless tools, create a write-capable token in the dashboard's <strong>API tokens</strong> and provide it through the environment:</p>
 	<Terminal code={token} />
-	<p>This environment-based connection lasts for the current shell session. Keep your token secret; for automation, use your secret manager.</p>
+	<p>The connection lasts for the current shell session. Keep your token out of shared logs and public code.</p>
 </section>
 
 <section>
 	<h2>3. Choose a blog</h2>
 	<Terminal code={'stscli blog create "Writing desk" --slug writing-desk\nstscli blog list\nstscli blog use writing-desk'} />
+	<h3>Blog appearance</h3>
+	<p>Manage the same styling as the dashboard. These commands affect every v2 embed for the selected blog, never the Markdown files. Use <code>--blog</code> to target another blog.</p>
+	<Terminal code={'stscli blog appearance get\nstscli blog appearance set --file appearance.json\nstscli blog appearance reset --yes'} />
+	<p><code>get</code> prints the versioned JSON document, or <code>null</code> for built-in defaults. <code>set</code> replaces the entire document, not individual fields. It requires a write-capable token. <code>reset</code> asks for confirmation unless <code>--yes</code> is supplied.</p>
+	<Terminal code={'{\n  "version": 1,\n  "colors": { "link": "#2563eb" },\n  "markdown": {\n    "code_background": "#f3f4f6",\n    "code_padding": 16,\n    "table_cell_padding": 8,\n    "quote_border_width": 3\n  }\n}'} language="json" />
+	<p>The file contains the appearance document directly, without the API’s <code>embed_appearance</code> wrapper. You can paste the same document into the dashboard’s JSON editor. All heading, link, code, table and image controls are supported through this command. Fields may also use the keyword defaults the dashboard shows: <code>inherit</code>, <code>revert</code>, <code>currentcolor</code>, <code>transparent</code> and <code>none</code> keep the built-in or website look and are dropped on save, so a file of only defaults clears the appearance. See the <a href="/docs/integration">integration guide</a> for supported tokens and ranges.</p>
+	<p>Keep several complete stylings and switch between them. <code>save</code> snapshots the current styling (or <code>--file</code>) under a name, <code>apply</code> persists a saved style to the blog, and <code>list</code>/<code>delete</code> manage the collection:</p>
+	<Terminal code={'stscli blog appearance save cozy\nstscli blog appearance list\nstscli blog appearance apply cozy\nstscli blog appearance delete cozy --yes'} />
 	<p>The selected blog is saved for future commands. Use <code>--blog writing-desk</code> to override it for one command.</p>
 </section>
 
@@ -71,7 +76,7 @@ stscli whoami`;
 	<Terminal code={'stscli post get hello-world\nstscli post edit hello-world\nstscli post unpublish hello-world\nstscli post delete hello-world'} />
 	<p>Commands accept a post ID or slug. Editing a published post changes it live; there is no revision history. Unpublishing returns it to draft. Deleting asks for confirmation; <code>--yes</code> skips the prompt. Deleted slugs stay reserved.</p>
 	<h3>Automation</h3>
-	<p>Set <code>STATESU_SERVER</code> and <code>STATESU_TOKEN</code> through your environment or secret manager. Use <code>--json</code> for machine-readable output.</p>
+	<p>Provide the token through your environment or secret manager as shown above. Use <code>--json</code> for machine-readable output.</p>
 	<Terminal code={'stscli --blog writing-desk post create "Release notes" --file notes.md --publish\nstscli --blog writing-desk --json post list'} />
 	<p>Run <code>stscli --help</code> or <code>stscli post --help</code> for all options. <code>stscli logout</code> revokes the saved token and clears local settings without asking for your password. Revoke environment-provided tokens in the dashboard.</p>
 </section>

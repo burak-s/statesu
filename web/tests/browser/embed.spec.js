@@ -137,6 +137,18 @@ test('CLI login signs in on the website, approves access, exchanges PKCE code an
 		expect(whoami.blogs.some((blog) => blog.id === account.blog.id)).toBe(true);
 		const legacyWhoami = JSON.parse(execFileSync(legacyBinary, ['whoami', '--json'], { env, encoding: 'utf8' }));
 		expect(legacyWhoami).toEqual(whoami);
+		const style = { version: 1, markdown: { h1_size: 40, link_decoration: 'none', image_align: 'right', table_stripe_background: '#aabbcc' } };
+		const styleFile = join(directory, 'appearance.json');
+		await writeFile(styleFile, JSON.stringify(style));
+		const appearanceArgs = ['blog', 'appearance'];
+		const runAppearance = (...args) => JSON.parse(execFileSync(binary, [...appearanceArgs, ...args, '--blog', account.blog.id], { env, encoding: 'utf8' }));
+		expect(runAppearance('get')).toBeNull();
+		expect(runAppearance('set', '--file', styleFile)).toEqual(style);
+		expect(runAppearance('get')).toEqual(style);
+		const profile = await json(await request.get(`${API}/public/blogs/${account.blog.slug}`));
+		expect(profile.embed_appearance).toEqual(style);
+		expect(runAppearance('reset', '--yes')).toBeNull();
+		expect(runAppearance('get')).toBeNull();
 		execFileSync(binary, ['logout'], { env });
 		expect((await request.get(`${API}/blogs`, {
 			headers: { Authorization: `Bearer ${settings.pat}` }
@@ -145,6 +157,50 @@ test('CLI login signs in on the website, approves access, exchanges PKCE code an
 		child.kill();
 		await rm(directory, { recursive: true, force: true });
 	}
+});
+
+test('dashboard keeps a single title, sharp unframed sections and a usable layout at every width', async ({ page }) => {
+	const blogs = [
+		{ id: 'layout-blog-1', name: 'Writing desk', slug: 'writing-desk', domain: 'example.com', origins: [] },
+		{ id: 'layout-blog-2', name: 'Changelog', slug: 'changelog', domain: null, origins: [] }
+	];
+	const errors = [];
+	page.on('pageerror', (error) => errors.push(error.message));
+	await page.route(`${API}/auth/me`, (route) => route.fulfill({ json: { id: 'layout-user', email: 'writer@example.com' } }));
+	await page.route(`${API}/auth/pats`, (route) => route.fulfill({ json: [] }));
+	await page.route(`${API}/blogs`, (route) => route.fulfill({ json: blogs }));
+	await page.route(`${API}/blogs/*/*`, (route) => {
+		const path = new URL(route.request().url()).pathname;
+		const data = path.endsWith('/storage-connections') ? []
+			: path.endsWith('/media-storage') ? { storage: 'statesu', connection_id: null }
+			: { items: [] };
+		return route.fulfill({ json: data });
+	});
+	await page.goto(`${API}/dashboard`);
+	const navigation = page.getByRole('navigation', { name: 'Sections', exact: true });
+	await expect(navigation).toBeVisible();
+	for (const view of ['Blogs', 'Posts', 'Settings', 'API tokens']) {
+		await navigation.getByRole('button', { name: view, exact: true }).click();
+		await expect(page.getByRole('heading', { level: 1 })).toHaveText(view);
+		await expect(navigation.getByRole('button', { name: view, exact: true })).toHaveAttribute('aria-current', 'page');
+		for (const width of [390, 768, 1024, 1440]) {
+			await page.setViewportSize({ width, height: 900 });
+			expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+		}
+		for (const section of await page.locator('.panel').all()) {
+			await expect(section).toHaveCSS('border-top-width', '0px');
+			await expect(section).toHaveCSS('border-radius', '0px');
+			await expect(section).toHaveCSS('background-color', 'rgba(0, 0, 0, 0)');
+		}
+		if (view === 'Settings') {
+			await expect(page.getByRole('heading', { name: 'Embed appearance', exact: true })).toHaveCount(1);
+			await page.getByLabel('Current blog').selectOption('layout-blog-2');
+			await expect(page.getByLabel('Domain (optional)', { exact: true })).toHaveValue('');
+			await page.getByRole('link', { name: 'Website integration', exact: true }).click();
+			await expect(page).toHaveURL(/#integration$/);
+		}
+	}
+	expect(errors).toEqual([]);
 });
 
 test('dashboard makes token revocation confirmation explicit and revokes access immediately', async ({ page, request, account }) => {
@@ -266,10 +322,15 @@ test('the appearance editor saves typed values and the preview matches the embed
 	await expect(section.getByLabel('Body size (%)', { exact: true })).toHaveValue('');
 
 	// Numeric tokens are submitted as numbers; the backend rejects strings.
+	await section.locator('summary').filter({ hasText: /^Typography$/ }).click();
 	const bodySize = section.getByLabel('Body size (%)', { exact: true });
 	await bodySize.fill('110');
-	const textColor = section.getByLabel('Text color', { exact: true });
+	const textColor = section.locator('#appearance-text');
 	await textColor.fill('#123456');
+	await section.locator('summary').filter({ hasText: /^Code blocks$/ }).click();
+	await section.locator('#appearance-code_background').fill('#eeeeee');
+	await section.locator('#appearance-code_padding').fill('16');
+	await expect.poll(() => section.locator('.preview-host pre').evaluate((el) => getComputedStyle(el).padding)).toBe('16px');
 	await expect(section.getByRole('button', { name: 'Save appearance' })).toBeEnabled();
 	await section.getByRole('button', { name: 'Save appearance', exact: true }).click();
 	await expect(section.getByRole('status')).toContainText('Appearance saved');
@@ -278,9 +339,10 @@ test('the appearance editor saves typed values and the preview matches the embed
 	const appearance = saved.find((blog) => blog.id === account.blog.id).embed_appearance;
 	expect(appearance.typography.body_size).toBe(110);
 	expect(appearance.colors.text).toBe('#123456');
+	expect(appearance.markdown).toEqual({ code_background: '#eeeeee', code_padding: 16 });
 	expect(appearance.typography.font).toBeUndefined();
 	expect(appearance.typography.google_font).toBeUndefined();
-	await expect(section.locator('select')).toHaveCount(0);
+	await expect(section.locator('select[id*="font"]')).toHaveCount(0);
 
 	// The preview renders through the embed's own stylesheet inside a shadow
 	// root: the saved tokens are visible there immediately.
@@ -307,6 +369,87 @@ test('the appearance editor saves typed values and the preview matches the embed
 	expect(cleared.find((blog) => blog.id === account.blog.id).embed_appearance).toBeUndefined();
 });
 
+test('appearance JSON and fields share a draft, reject invalid input and preview real posts on mobile', async ({ page, request, account }) => {
+	await createPost(request, account, 'preview-draft', { title: 'My draft preview', content_markdown: '# Real heading\n\nDraft body', status: 'draft' });
+	await signIn(page, account);
+	await page.getByRole('button', { name: 'Settings for Browser blog', exact: true }).click();
+	const section = page.locator('.appearance');
+	const save = section.getByRole('button', { name: 'Save appearance', exact: true });
+	await section.getByRole('button', { name: 'JSON', exact: true }).click();
+	const editor = section.getByLabel('Appearance JSON', { exact: true });
+	const defaults = JSON.parse(await editor.inputValue());
+	expect(defaults.colors.text).toBe('inherit');
+	expect(defaults.colors.link).toBe('revert');
+	expect(defaults.markdown.h6_weight).toBe(700);
+	expect(defaults.markdown.image_align).toBe('center');
+	expect(defaults.markdown.code_background).toBe('transparent');
+	await section.getByRole('button', { name: 'Format JSON', exact: true }).click();
+	await expect(save).toBeDisabled();
+	await editor.fill(JSON.stringify(defaults));
+	await expect(save).toBeEnabled();
+	await save.click();
+	await expect(save).toBeDisabled();
+	const templateSaved = await json(await request.get(`${API}/blogs`, { headers: account.headers }));
+	expect(templateSaved.find((blog) => blog.id === account.blog.id).embed_appearance.colors).toEqual({
+		background: 'transparent', border: '#00000026'
+	});
+	expect(templateSaved.find((blog) => blog.id === account.blog.id).embed_appearance.colors.text).toBeUndefined();
+	await editor.fill(JSON.stringify({ version: 1, markdown: { h1_size: 48, h1_weight: 600, link_decoration: 'none', image_align: 'right' } }));
+	await expect(section.locator('.preview-host .statesu-body h1')).toHaveCSS('font-size', '48px');
+	await editor.fill('{');
+	await expect(save).toBeDisabled();
+	await expect(section.getByRole('button', { name: 'Fields', exact: true })).toBeDisabled();
+	await expect(section.locator('.preview-host .statesu-body h1')).toHaveCSS('font-size', '48px');
+	await editor.fill(JSON.stringify({ version: 1, markdown: { h1_size: 42, image_align: 'left' } }));
+	await section.getByRole('button', { name: 'Fields', exact: true }).click();
+	await section.locator('summary').filter({ hasText: /^H1$/ }).click();
+	await expect(section.locator('#appearance-h1_size')).toHaveValue('42');
+	await section.getByRole('button', { name: 'Reset H1: Font size', exact: true }).click();
+	await expect(section.locator('#appearance-h1_size')).toHaveValue('');
+	await section.locator('#appearance-h1_size').fill('36');
+	page.once('dialog', (dialog) => dialog.dismiss());
+	await section.getByRole('button', { name: 'Default', exact: true }).click();
+	await expect(section.locator('#appearance-h1_size')).toHaveValue('36');
+	await section.getByRole('button', { name: 'JSON', exact: true }).click();
+	expect(JSON.parse(await editor.inputValue()).markdown.h1_size).toBe(36);
+	await save.click();
+	await expect(save).toBeDisabled();
+	const saved = await json(await request.get(`${API}/blogs`, { headers: account.headers }));
+	expect(saved.find((blog) => blog.id === account.blog.id).embed_appearance.markdown.h1_size).toBe(36);
+	await section.getByRole('button', { name: 'Load my posts', exact: true }).click();
+	await section.getByLabel('Preview content').selectOption({ label: 'My draft preview (draft)' });
+	await expect(section.locator('.preview-host .statesu-title')).toHaveText('My draft preview');
+	await expect(section.locator('.preview-host .statesu-body h1')).toHaveText('Real heading');
+	await page.setViewportSize({ width: 390, height: 844 });
+	await section.getByRole('button', { name: 'See preview', exact: true }).click();
+	await expect(section.locator('.preview')).toBeVisible();
+	await expect(editor).toBeHidden();
+	await section.getByRole('button', { name: 'Edit styles', exact: true }).click();
+	await expect(editor).toBeVisible();
+	await editor.fill('null');
+	await save.click();
+	await expect(save).toBeDisabled();
+
+	// Named styles: snapshot the draft, switch away, apply, delete.
+	await editor.fill(JSON.stringify({ version: 1, colors: { link: '#112233' } }));
+	await save.click();
+	await expect(save).toBeDisabled();
+	await section.getByLabel('Style name').fill('Cozy');
+	await section.getByRole('button', { name: 'Save current as style' }).click();
+	await expect(section.locator('.variant-list li')).toHaveCount(1);
+	await editor.fill(JSON.stringify({ version: 1, colors: { link: '#445566' } }));
+	await expect(section.locator('.variant-list li')).toBeVisible();
+	page.once('dialog', (dialog) => dialog.accept());
+	await section.locator('.variant-list li').filter({ hasText: 'Cozy' }).getByRole('button', { name: 'Apply' }).click();
+	await expect(section.getByLabel('Appearance JSON', { exact: true })).toHaveValue(/#112233/);
+	page.once('dialog', (dialog) => dialog.accept());
+	await section.locator('.variant-list li').filter({ hasText: 'Cozy' }).getByRole('button', { name: 'Delete' }).click();
+	await expect(section.locator('.variant-list li')).toHaveCount(0);
+	await editor.fill('null');
+	await save.click();
+	await expect(save).toBeDisabled();
+});
+
 test('inherited typography stays clean after opening and discarding edits', async ({ page, request, account }) => {
 	await signIn(page, account);
 	for (const typography of [{}, { body_size: 110 }]) {
@@ -321,6 +464,7 @@ test('inherited typography stays clean after opening and discarding edits', asyn
 		const discard = section.getByRole('button', { name: 'Discard changes', exact: true });
 		await expect(save).toBeDisabled();
 		await expect(discard).toBeDisabled();
+		await section.locator('summary').filter({ hasText: /^Typography$/ }).click();
 		const size = section.getByLabel('Body size (%)', { exact: true });
 		await size.fill('125');
 		await expect(save).toBeEnabled();

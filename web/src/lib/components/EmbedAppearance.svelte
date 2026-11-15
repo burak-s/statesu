@@ -4,9 +4,10 @@
 	// value; presets fill the same fields the controls bind to, and the
 	// preview renders through the embed's own modules so what the owner sees
 	// here is what visitors get.
-	import { embedStyles, parseAppearance, applyAppearance, RANGES } from '../../embed/appearance.js';
+	import { embedStyles, parseAppearance, applyAppearance, RANGES, MARKDOWN_FIELDS, validateAppearanceDocument, appearanceTemplate, stripDefaults } from '../../embed/appearance.js';
 	import { buildMediaRenderer } from '../../embed/media-renderer.js';
 	import { renderPost } from '../../embed/common.js';
+	import { request } from '#lib/api.js';
 
 	/**
 	 * `blog` — the selected blog row (its `embed_appearance` seeds the draft);
@@ -49,10 +50,11 @@
 		title: 'Sample post',
 		content_markdown:
 			'A paragraph with a [link](https://example.com), some **bold** and *emphasis* text.\n\n' +
-			'## Section heading\n\n' +
-			'- First list item\n- Second list item\n\n' +
+			'# First-level heading\n\n## Section heading\n\n### Smaller heading\n\n#### Fourth-level heading\n\n##### Fifth-level heading\n\n###### Sixth-level heading\n\nInline `code` stays separate from fenced code blocks.\n\n' +
+			'- First list item\n  - Nested item\n- Second list item\n\n1. Ordered item\n2. Another item\n\n' +
 			'> A quoted line of text\n\n' +
 			'```js\nconst ready = true;\n```\n\n' +
+			'| Feature | Status |\n| --- | --- |\n| Markdown | Ready |\n| Styling | Customizable |\n\n---\n\n' +
 			`![Sample image](${new URL('/embed-preview.svg', window.location.origin).href})`
 	};
 
@@ -72,6 +74,161 @@
 	let savedNote = $state(false);
 	let saving = $state(false);
 	let narrowPreview = $state(false);
+	let editorMode = $state('fields');
+	let jsonText = $state('null');
+	let jsonError = $state('');
+	let mobilePanel = $state('edit');
+	let previewPosts = $state([]);
+	let previewPostId = $state('');
+	let previewPage = $state(0);
+	let previewTotal = $state(0);
+	let postsLoading = $state(false);
+	let postsError = $state('');
+	/** @type {any[]} */
+	let variants = $state([]);
+	let variantsLoading = $state(false);
+	let variantsError = $state('');
+	let variantName = $state('');
+	let variantNote = $state('');
+	let variantBusy = $state(false);
+
+	async function loadVariants() {
+		const id = blog?.id;
+		if (!id) return;
+		variantsLoading = true;
+		variantsError = '';
+		try {
+			const result = await request(`/blogs/${id}/appearance/variants`);
+			if (blog?.id !== id) return;
+			if (result.ok) {
+				variants = result.data;
+			} else {
+				variantsError = result.error;
+			}
+		} catch {
+			if (blog?.id === id) variantsError = 'Could not load saved styles. Try again.';
+		} finally {
+			if (blog?.id === id) variantsLoading = false;
+		}
+	}
+
+	/** Snapshot the current draft (or the saved look) under a name. */
+	async function saveVariant() {
+		const id = blog?.id;
+		const name = variantName.trim();
+		if (!id || !name || variantBusy || jsonError || hasInvalidTokens) return;
+		variantBusy = true;
+		variantNote = '';
+		variantsError = '';
+		try {
+			const result = await request(`/blogs/${id}/appearance/variants`, {
+				method: 'POST',
+				body: { name, embed_appearance: draftForWire }
+			});
+			if (blog?.id !== id) return;
+			if (result.ok) {
+				variants = [result.data, ...variants.filter((variant) => variant.id !== result.data.id)];
+				variantName = '';
+				variantNote = `Style “${result.data.name}” saved.`;
+			} else {
+				variantsError = result.error;
+			}
+		} catch {
+			if (blog?.id === id) variantsError = 'Could not save the style. Try again.';
+		} finally {
+			if (blog?.id === id) variantBusy = false;
+		}
+	}
+
+	/** Applies a saved style: persists it and adopts it as the draft. */
+	async function applyVariant(variant) {
+		const id = blog?.id;
+		if (!id || saving || variantBusy || jsonError || hasInvalidTokens) return;
+		if (dirty && !window.confirm('Applying a saved style replaces your unsaved changes. Continue?')) return;
+		variantBusy = true;
+		saveError = '';
+		try {
+			const error = await save(toJsonSafe(variant.embed_appearance));
+			if (blog?.id !== id) return;
+			if (error) {
+				saveError = error;
+				return;
+			}
+			draft = toJsonSafe(variant.embed_appearance);
+			syncJson();
+			savedNote = true;
+		} catch {
+			saveError = 'Could not apply the style. Try again.';
+		} finally {
+			if (blog?.id === id) variantBusy = false;
+		}
+	}
+
+	async function deleteVariant(variant) {
+		const id = blog?.id;
+		if (!id || variantBusy) return;
+		if (!window.confirm(`Delete the saved style “${variant.name}”?`)) return;
+		variantBusy = true;
+		variantsError = '';
+		try {
+			const result = await request(`/blogs/${id}/appearance/variants/${variant.id}`, { method: 'DELETE' });
+			if (blog?.id !== id) return;
+			if (result.ok) {
+				variants = variants.filter((candidate) => candidate.id !== variant.id);
+				variantNote = '';
+			} else {
+				variantsError = result.error;
+			}
+		} catch {
+			if (blog?.id === id) variantsError = 'Could not delete the style. Try again.';
+		} finally {
+			if (blog?.id === id) variantBusy = false;
+		}
+	}
+
+
+
+	async function loadPreviewPosts() {
+		if (postsLoading || !blog?.id) return;
+		const id = blog.id;
+		postsLoading = true;
+		postsError = '';
+		try {
+			const result = await request(`/blogs/${id}/posts?page=${previewPage + 1}&size=20`);
+			if (blog?.id !== id) return;
+			if (!result.ok) { postsError = result.error; return; }
+			previewPosts = [...previewPosts, ...result.data.items];
+			previewPage += 1;
+			previewTotal = result.data.total;
+		} catch {
+			if (blog?.id === id) postsError = 'Could not load posts. Try again.';
+		} finally {
+			if (blog?.id === id) postsLoading = false;
+		}
+	}
+
+	function switchMode(mode) {
+		if (mode === editorMode || jsonError || hasInvalidTokens) return;
+		if (mode === 'json') jsonText = JSON.stringify(appearanceTemplate(draftForWire), null, 2);
+		editorMode = mode;
+	}
+
+	function editJson(text) {
+		jsonText = text;
+		savedNote = false;
+		try {
+			const value = JSON.parse(text);
+			jsonError = validateAppearanceDocument(value);
+			if (!jsonError) draft = value === null ? null : stripDefaults(value);
+		} catch {
+			jsonError = 'Invalid JSON. Check quotes, commas and brackets. Preview shows the last valid draft.';
+		}
+	}
+
+	function syncJson() {
+		jsonText = JSON.stringify(appearanceTemplate(draft), null, 2);
+		jsonError = '';
+	}
 
 	const savedAppearance = $derived(blog?.embed_appearance ?? null);
 
@@ -82,8 +239,20 @@
 		if (id !== draftBlogId) {
 			draftBlogId = id;
 			draft = toJsonSafe(savedAppearance);
+			syncJson();
+			previewPosts = [];
+			previewPostId = '';
+			previewPage = 0;
+			previewTotal = 0;
+			postsLoading = false;
+			postsError = '';
 			saveError = '';
 			savedNote = false;
+			variants = [];
+			variantsError = '';
+			variantName = '';
+			variantNote = '';
+			loadVariants();
 		}
 	});
 
@@ -97,6 +266,13 @@
 	function toJsonSafe(appearance) {
 		if (!appearance) return null;
 		const copy = JSON.parse(JSON.stringify(appearance));
+		for (const group of ['colors', 'typography', 'layout', 'decoration', 'markdown']) {
+			if (copy[group] === null) delete copy[group];
+			else if (copy[group]) {
+				for (const key of Object.keys(copy[group])) if (copy[group][key] === null) delete copy[group][key];
+				if (Object.keys(copy[group]).length === 0) delete copy[group];
+			}
+		}
 		if (copy.typography) {
 			delete copy.typography.font;
 			delete copy.typography.google_font;
@@ -117,6 +293,7 @@
 	 * @param {string|number|null} value — '' unsets the token
 	 */
 	function setToken(group, key, value) {
+		savedNote = false;
 		const current = ensureDraft();
 		if (value === '' || value === null || value === undefined) {
 			if (current[group]) {
@@ -143,15 +320,17 @@
 	 *  @param {{ value: any }} preset
 	 */
 	function applyPreset(preset) {
+		if ((dirty || jsonError || hasInvalidTokens) && !window.confirm('Replace your unsaved appearance changes with this preset?')) return;
 		draft = preset.value ? structuredClone(preset.value) : null;
+		syncJson();
 		saveError = '';
 		savedNote = false;
 	}
 
 	// Validation -------------------------------------------------------------
-	const HEX_INPUT = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+	const HEX_INPUT = /^#(?:[0-9a-f]{3}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
 
-	/** @type {{ group: 'colors'|'typography'|'layout'|'decoration', key: string, label: string }[]} */
+	/** @type {any[]} */
 	const TOKEN_FIELDS = [
 		{ group: 'colors', key: 'text', label: 'Text color' },
 		{ group: 'colors', key: 'background', label: 'Background' },
@@ -165,8 +344,32 @@
 		{ group: 'layout', key: 'padding', label: 'Padding (px)' },
 		{ group: 'layout', key: 'spacing', label: 'Spacing (px)' },
 		{ group: 'decoration', key: 'border_width', label: 'Border width (px)' },
-		{ group: 'decoration', key: 'corner_radius', label: 'Corner radius (px)' }
-	];
+		{ group: 'decoration', key: 'corner_radius', label: 'Corner radius (px)' },
+		...MARKDOWN_FIELDS.map((field) => ({ ...field, group: 'markdown' }))
+	].map((field) => ({ ...field,
+		color: field.group === 'colors' || field.color,
+		section: field.section ?? ({ colors: 'Colors', typography: 'Typography', layout: 'Outer container', decoration: 'Container border' })[field.group]
+	}));
+
+	function defaultHint(field) {
+		const defaults = {
+			body_size: '100%', heading_scale: '100%', line_height: '160%', max_width: 'No limit',
+			padding: '0px', border_width: '0px', corner_radius: '0px', background: 'Transparent',
+			text: 'Website text color', link: 'Browser link color', muted: 'Text color', border: 'rgba(0,0,0,.15)',
+			spacing: 'Browser block spacing', paragraph_spacing: 'Global / browser spacing', heading_spacing: 'Browser heading spacing',
+			list_indent: '40px', list_spacing: '0px', link_decoration: 'Underline', link_hover_decoration: 'Link underline setting',
+			link_hover_color: 'Link color', table_border_color: 'Transparent', table_cell_padding: '1px', image_width: 'Natural / Markdown-pinned width',
+			image_align: 'Center (unlinked images)', image_spacing: '1.25em', rule_width: '1px', rule_color: 'Text color'
+		};
+		if (defaults[field.key]) return defaults[field.key];
+		if (/^h[1-6]_size$/.test(field.key)) return 'Browser heading size × heading scale';
+		if (/^h[1-6]_weight$/.test(field.key)) return 'Bold (700)';
+		if (/^h[1-6]_spacing$/.test(field.key)) return 'Heading / browser spacing';
+		if (field.key.endsWith('_background')) return 'Transparent';
+		if (field.key.endsWith('_color')) return 'Inherited text color';
+		if (field.key.endsWith('_size')) return 'Browser monospace size';
+		return '0px';
+	}
 
 	/** True when a token is present but malformed; such drafts cannot be saved.
 	 *  @param {string} group @param {string} key
@@ -174,7 +377,9 @@
 	function invalidToken(group, key) {
 		const value = token(group, key);
 		if (value === '') return false;
-		if (group === 'colors') {
+		const options = TOKEN_FIELDS.find((field) => field.group === group && field.key === key)?.options;
+		if (options) return !options.includes(value);
+		if (group === 'colors' || (group === 'markdown' && MARKDOWN_FIELDS.some((field) => field.key === key && field.color))) {
 			if (key === 'background') {
 				return typeof value === 'string' && value.toLowerCase() !== 'transparent' && !HEX_INPUT.test(value);
 			}
@@ -193,9 +398,9 @@
 	const draftForWire = $derived.by(() => {
 		if (!draft) return null;
 		const copy = toJsonSafe(draft);
-		for (const { group, key } of TOKEN_FIELDS) {
+		for (const { group, key, color, options } of TOKEN_FIELDS) {
 			const value = copy[group]?.[key];
-			if (typeof value === 'string' && value !== '' && group !== 'colors') {
+			if (typeof value === 'string' && value !== '' && group !== 'colors' && !color && !options) {
 				copy[group][key] = Number(value);
 			}
 		}
@@ -203,6 +408,7 @@
 	});
 
 	const dirty = $derived.by(() => {
+		if (jsonError || hasInvalidTokens) return true;
 		const left = JSON.stringify(normalize(draftForWire));
 		const right = JSON.stringify(normalize(savedAppearance));
 		return left !== right;
@@ -211,7 +417,7 @@
 	/** @param {any} appearance @returns {any} */
 	function normalize(appearance) {
 		const parsed = parseAppearance(toJsonSafe(appearance) ?? undefined);
-		return parsed ?? null;
+		return parsed && Object.values(parsed).some((group) => group && Object.keys(group).length > 0) ? parsed : null;
 	}
 
 	// Contrast feedback ------------------------------------------------------
@@ -248,20 +454,23 @@
 	}
 
 	async function saveDraft() {
-		if (saving || hasInvalidTokens) return;
+		if (saving || hasInvalidTokens || jsonError) return;
 		saving = true;
 		saveError = '';
-		const error = await save(draftForWire);
-		saving = false;
-		if (error) {
-			saveError = error;
-			return;
+		try {
+			const error = await save(draftForWire);
+			if (error) { saveError = error; return; }
+			savedNote = true;
+		} catch {
+			saveError = 'Could not save appearance. Your draft is preserved; try again.';
+		} finally {
+			saving = false;
 		}
-		savedNote = true;
 	}
 
 	function discardDraft() {
 		draft = toJsonSafe(savedAppearance);
+		syncJson();
 		saveError = '';
 		savedNote = false;
 	}
@@ -270,6 +479,33 @@
 	/** @type {HTMLDivElement | null} */
 	let previewHost = $state(null);
 	let previewFeed = $state(false);
+	let previewSection = $state('');
+
+	const SECTION_TARGETS = {
+		Text: 'h2', Lists: 'ul', 'Code blocks': 'pre', 'Inline code': 'p code',
+		Blockquotes: 'blockquote', Tables: 'table', Images: 'img', Dividers: 'hr', Links: 'a',
+		H1: '.statesu-body h1', H2: '.statesu-body h2', H3: 'h3', H4: 'h4', H5: 'h5', H6: 'h6'
+	};
+
+	function focusSection(section) {
+		previewFeed = false;
+		previewSection = section;
+	}
+
+	$effect(() => {
+		const section = previewSection;
+		const feed = previewFeed;
+		if (!section || feed || !previewHost) return;
+		const host = previewHost;
+		const frame = requestAnimationFrame(() => {
+			const target = host.shadowRoot?.querySelector(SECTION_TARGETS[section] ?? '.statesu-title');
+			const viewport = host.closest('.preview-frame');
+			if (target && viewport) {
+				viewport.scrollTop += target.getBoundingClientRect().top - viewport.getBoundingClientRect().top - 16;
+			}
+		});
+		return () => cancelAnimationFrame(frame);
+	});
 
 	// Build the shadow tree once.
 	$effect(() => {
@@ -303,7 +539,7 @@
 			}
 			root.appendChild(container);
 		} else {
-			renderPost(window, root, SAMPLE_POST, renderer, false);
+			renderPost(window, root, previewPosts.find((post) => post.id === previewPostId) ?? SAMPLE_POST, renderer, false);
 		}
 	});
 
@@ -325,101 +561,114 @@
 </script>
 
 <div class="appearance">
-	<h3>Embed appearance</h3>
-	<p>
-		Style how your posts look inside the v2 embed — on every site that shows them, without touching
-		any snippet. Unset settings keep the built-in look.
-	</p>
+	<h2>Embed appearance</h2>
+	<p>Style every post in this blog’s v2 embeds without changing your Markdown files. Blank fields use built-in defaults; website overrides take priority.</p>
 
 	<div class="presets" role="group" aria-label="Presets">
 		{#each PRESETS as preset (preset.id)}
 			<button
 				type="button"
 				class="preset"
+				disabled={saving}
 				title={preset.hint}
 				onclick={() => applyPreset(preset)}
 			>{preset.label}</button>
 		{/each}
 	</div>
 
-	<div class="editor">
-		<div class="controls">
-			<h4>Colors</h4>
-			{#each TOKEN_FIELDS.filter((field) => field.group === 'colors') as field (field.key)}
-				<div class="token" class:invalid={invalidToken(field.group, field.key)}>
-					<label for={`appearance-${field.key}`}>{field.label}</label>
-					<input
-						id={`appearance-${field.key}`}
-						value={token(field.group, field.key)}
-						placeholder={field.key === 'background' ? '#ffffff / transparent' : '#1a2b3c'}
-						oninput={(event) => setToken(field.group, field.key, /** @type {HTMLInputElement} */ (event.target).value.trim())}
-					/>
-					<input
-						type="color"
-						tabindex="-1"
-						aria-label={`${field.label} picker`}
-						value={HEX_INPUT.test(String(token(field.group, field.key))) && String(token(field.group, field.key)).length === 7
-							? String(token(field.group, field.key)).toLowerCase()
-							: '#888888'}
-						oninput={(event) => pickColor(field.group, field.key, event)}
-					/>
-				</div>
-			{/each}
-
-			<h4>Typography</h4>
-			<p class="note">Fonts are inherited from your website. The embed does not load fonts.</p>
-			{#each TOKEN_FIELDS.filter((field) => field.group === 'typography') as field (field.key)}
-				<div class="token" class:invalid={invalidToken(field.group, field.key)}>
-					<label for={`appearance-${field.key}`}>{field.label}</label>
-					<input
-						id={`appearance-${field.key}`}
-						type="number"
-						min={RANGES[field.key][0]}
-						max={RANGES[field.key][1]}
-						value={token(field.group, field.key)}
-						placeholder={`${RANGES[field.key][0]}–${RANGES[field.key][1]}`}
-						oninput={(event) => setToken(field.group, field.key, /** @type {HTMLInputElement} */ (event.target).value)}
-					/>
-				</div>
-			{/each}
-
-			<h4>Layout</h4>
-			{#each TOKEN_FIELDS.filter((field) => field.group === 'layout') as field (field.key)}
-				<div class="token" class:invalid={invalidToken(field.group, field.key)}>
-					<label for={`appearance-${field.key}`}>{field.label}</label>
-					<input
-						id={`appearance-${field.key}`}
-						type="number"
-						min={RANGES[field.key][0]}
-						max={RANGES[field.key][1]}
-						value={token(field.group, field.key)}
-						placeholder={`${RANGES[field.key][0]}–${RANGES[field.key][1]}`}
-						oninput={(event) => setToken(field.group, field.key, /** @type {HTMLInputElement} */ (event.target).value)}
-					/>
-				</div>
-			{/each}
-
-			<h4>Decoration</h4>
-			{#each TOKEN_FIELDS.filter((field) => field.group === 'decoration') as field (field.key)}
-				<div class="token" class:invalid={invalidToken(field.group, field.key)}>
-					<label for={`appearance-${field.key}`}>{field.label}</label>
-					<input
-						id={`appearance-${field.key}`}
-						type="number"
-						min={RANGES[field.key][0]}
-						max={RANGES[field.key][1]}
-						value={token(field.group, field.key)}
-						placeholder={`${RANGES[field.key][0]}–${RANGES[field.key][1]}`}
-						oninput={(event) => setToken(field.group, field.key, /** @type {HTMLInputElement} */ (event.target).value)}
-					/>
-				</div>
-			{/each}
+	<div class="mode-bar" role="group" aria-label="Appearance editor mode">
+		<button type="button" aria-pressed={editorMode === 'fields'} disabled={saving || !!jsonError || hasInvalidTokens} onclick={() => switchMode('fields')}>Fields</button>
+		<button type="button" aria-pressed={editorMode === 'json'} disabled={saving || hasInvalidTokens} onclick={() => switchMode('json')}>JSON</button>
+		<a href="/docs/integration" target="_blank" rel="noreferrer">Token reference</a>
+	</div>
+	<div class="variants">
+		<h3>Saved styles</h3>
+		<p class="note">Name the styling you see now — preview included — and switch between styles any time. Applying one persists it for every embed; deleting only removes the snapshot.</p>
+		<div class="variant-save">
+			<input
+				aria-label="Style name"
+				placeholder="Style name, e.g. Cozy winter"
+				maxlength="64"
+				bind:value={variantName}
+				onkeydown={(event) => { if (event.key === 'Enter') { event.preventDefault(); saveVariant(); } }}
+			/>
+			<button
+				type="button"
+				disabled={variantBusy || saving || !!jsonError || hasInvalidTokens || variantName.trim() === ''}
+				onclick={saveVariant}
+			>{variantBusy ? 'Saving…' : 'Save current as style'}</button>
 		</div>
+		{#if variantNote}<p class="ok" role="status">{variantNote}</p>{/if}
+		{#if variantsError}<p class="error" role="alert">{variantsError}</p>{/if}
+		{#if variantsLoading}
+			<p class="note">Loading saved styles…</p>
+		{:else if variants.length === 0}
+			<p class="note">No saved styles yet.</p>
+		{:else}
+			<ul class="variant-list">
+				{#each variants as variant (variant.id)}
+					<li>
+						<strong>{variant.name}</strong>
+						<button type="button" class="secondary" disabled={variantBusy || saving || !!jsonError || hasInvalidTokens} onclick={() => applyVariant(variant)}>Apply</button>
+						<button type="button" class="secondary" disabled={variantBusy} onclick={() => deleteVariant(variant)}>Delete</button>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</div>
+
+	<div class="mobile-tabs" role="group" aria-label="Appearance workspace">
+		<button type="button" aria-pressed={mobilePanel === 'edit'} onclick={() => mobilePanel = 'edit'}>Edit styles</button>
+		<button type="button" aria-pressed={mobilePanel === 'preview'} onclick={() => mobilePanel = 'preview'}>See preview</button>
+	</div>
+	<div class="editor" class:json-mode={editorMode === 'json'} class:show-preview={mobilePanel === 'preview'}>
+		<fieldset class="controls" disabled={saving}>
+			{#if editorMode === 'json'}
+				<label for="appearance-json">Appearance JSON</label>
+				<p class="note" id="json-help">Every supported field is listed with its default already filled in. Change a value to customize it; type the default back to restore it. Keywords name inherited defaults: inherit, revert, currentcolor, transparent and none follow your website or the built-in look and are dropped on save. Ranges are described in Fields and the token reference. This is the same document used by the CLI, without an embed_appearance wrapper. To clear all styling, save null.</p>
+				<textarea id="appearance-json" aria-describedby="json-help json-feedback" aria-invalid={!!jsonError} spellcheck="false" value={jsonText} oninput={(event) => editJson(event.currentTarget.value)}></textarea>
+				<p id="json-feedback" class:error={!!jsonError} role="status">{jsonError || 'Valid appearance JSON'}</p>
+				<button type="button" class="secondary" disabled={!!jsonError} onclick={() => jsonText = JSON.stringify(appearanceTemplate(draftForWire), null, 2)}>Format JSON</button>
+			{:else}
+				{#each [...new Set(TOKEN_FIELDS.map((field) => field.section))] as section}
+					<details open={section === 'Colors'} ontoggle={(event) => { if (event.currentTarget.open && SECTION_TARGETS[section]) focusSection(section); }}>
+						<summary>{section}</summary>
+						{#if section === 'Typography'}<p class="note">Fonts inherit from your website. No fonts are downloaded.</p>{/if}
+						{#each TOKEN_FIELDS.filter((field) => field.section === section) as field (field.key)}
+							<div class="token" class:invalid={invalidToken(field.group, field.key)}>
+								<label for={`appearance-${field.key}`}>{field.label}{field.group === 'markdown' && !field.color && !field.options && field.unit ? ` (${field.unit})` : ''}</label>
+								{#if field.options}
+									<select id={`appearance-${field.key}`} value={token(field.group, field.key)} onchange={(event) => setToken(field.group, field.key, event.currentTarget.value)}>
+										<option value="">Default</option>
+										{#each field.options as option}<option value={option}>{option}</option>{/each}
+									</select>
+								{:else}
+									<input id={`appearance-${field.key}`} type={field.color ? 'text' : 'number'}
+										min={RANGES[field.key]?.[0]} max={RANGES[field.key]?.[1]}
+										value={token(field.group, field.key)} aria-invalid={invalidToken(field.group, field.key)}
+										placeholder={field.color ? field.key === 'background' ? '#rrggbb / transparent' : '#rrggbb' : `${RANGES[field.key][0]}–${RANGES[field.key][1]}`}
+										oninput={(event) => setToken(field.group, field.key, event.currentTarget.value.trim())} />
+								{/if}
+								{#if field.color}
+									<input type="color" aria-label={`${section}: ${field.label} picker`}
+										value={/^#[0-9a-f]{6}$/i.test(String(token(field.group, field.key))) ? String(token(field.group, field.key)) : '#888888'}
+										oninput={(event) => pickColor(field.group, field.key, event)} />
+								{/if}
+								<div class="field-help">
+									<span class="note">Default: {defaultHint(field)}</span>
+									<button type="button" class="secondary reset" aria-label={`Reset ${section}: ${field.label}`} disabled={token(field.group, field.key) === ''} onclick={() => setToken(field.group, field.key, '')}>Reset</button>
+								</div>
+							</div>
+						{/each}
+					</details>
+				{/each}
+			{/if}
+		</fieldset>
 
 		<div class="preview">
 			<div class="preview-bar">
 				<strong>Preview</strong>
-				<span class="note">{draft ? 'Saved appearance' : 'Built-in look'}</span>
+				<span class="note">{dirty ? 'Unsaved changes' : draft ? 'Saved appearance' : 'Built-in look'}</span>
 				<button
 					type="button"
 					class="width-toggle"
@@ -429,6 +678,18 @@
 					{narrowPreview ? 'Desktop' : 'Mobile'}
 				</button>
 			</div>
+			<label for="appearance-preview-post">Preview content</label>
+			<select id="appearance-preview-post" bind:value={previewPostId} onchange={() => { previewFeed = false; }}>
+				<option value="">Sample Markdown</option>
+				{#each previewPosts as post (post.id)}<option value={post.id}>{post.title} ({post.status})</option>{/each}
+			</select>
+			{#if previewPage === 0 || previewPosts.length < previewTotal}
+				<button type="button" class="secondary" disabled={postsLoading} onclick={loadPreviewPosts}>{postsLoading ? 'Loading posts…' : previewPage ? 'Load more posts' : 'Load my posts'}</button>
+			{:else if previewPosts.length === 0}
+				<p class="note">No posts yet. Use the sample to try every Markdown element.</p>
+			{/if}
+			{#if postsError}<p class="error" role="alert">{postsError}</p>{/if}
+			<p class="note">Open a section to jump to that element, if present. Fonts inherit from this page; your website may use different fonts. Feed mode uses sample announcements.</p>
 			<!-- The preview is the embed's own renderer and stylesheet inside a
 			     shadow root: it cannot drift from what visitors see. -->
 			<div class="preview-frame" class:narrow={narrowPreview}>
@@ -445,10 +706,10 @@
 	{/if}
 
 	<div class="actions">
-		<button type="button" disabled={saving || hasInvalidTokens || !dirty} onclick={saveDraft}>
+		<button type="button" disabled={saving || hasInvalidTokens || !!jsonError || !dirty} onclick={saveDraft}>
 			{saving ? 'Saving…' : 'Save appearance'}
 		</button>
-		<button type="button" class="secondary" disabled={!dirty} onclick={discardDraft}>Discard changes</button>
+		<button type="button" class="secondary" disabled={saving || !dirty} onclick={discardDraft}>Discard changes</button>
 		{#if dirty}
 			<span class="note">Unsaved changes</span>
 		{/if}
@@ -462,41 +723,66 @@
 </div>
 
 <style>
-	.appearance {
-		display: grid;
-		gap: 14px;
-	}
+	.appearance { display: grid; gap: 16px; min-width: 0; color: #000; }
+	h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+	p { margin: 0; font-size: 14px; color: inherit; line-height: 1.6; }
+	button { font: inherit; font-size: 13px; font-weight: 600; line-height: 1.5; min-height: 40px; padding: 12px 18px; background: #000; color: #fff; border: 0; border-radius: 0; cursor: pointer; }
+	button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 4px; }
+	button:disabled { opacity: .5; cursor: not-allowed; }
+	:focus-visible { outline: 2px solid #171717; outline-offset: 3px; }
+	input, select, textarea { box-sizing: border-box; width: 100%; min-width: 0; padding: 12px 14px; font: inherit; font-size: 14px; line-height: 1.5; color: #fff; background: #000; border: 0; border-radius: 0; }
+	input::placeholder { color: #fff; opacity: .7; }
+	input[type='color'] { width: 44px; height: 45px; padding: 4px; cursor: pointer; }
+	.note { font-size: 13px; }
+	.error { background: #000; color: #fff; padding: 12px 16px; }
+	.ok { font-weight: 600; }
 	.presets {
 		display: flex;
-		gap: 8px;
+		gap: 24px;
 		flex-wrap: wrap;
 	}
 	.preset {
 		background: none;
-		border: 1px solid var(--border, #ddd);
-		padding: 6px 14px;
-		font: inherit;
-		font-size: 13px;
-		cursor: pointer;
+		color: #000;
+		padding: 4px 0;
+		text-decoration: underline;
+		text-underline-offset: 4px;
 	}
+	.variants { display: grid; gap: 10px; }
+	.variants h3 { margin: 0; font-size: 14px; font-weight: 650; }
+	.variant-save { display: flex; gap: 8px; flex-wrap: wrap; }
+	.variant-save input { flex: 1 1 200px; }
+	.variant-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+	.variant-list li { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+	.variant-list strong { margin-right: auto; }
+	.mode-bar { display: flex; align-items: center; gap: 12px; }
+	.mode-bar button[aria-pressed='false'], .mobile-tabs button[aria-pressed='false'] { background: #eee; color: #000; }
+	.mode-bar a { color: inherit; font-size: 13px; }
+	.mobile-tabs { display: none; }
+	textarea { min-height: 440px; resize: vertical; font-family: monospace; tab-size: 2; }
+	.field-help { grid-column: 1 / -1; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+	.reset { font-size: 12px; min-height: 32px; }
 	.editor {
 		display: grid;
-		grid-template-columns: minmax(240px, 320px) 1fr;
+		grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
 		gap: 24px;
 		align-items: start;
 	}
-	@media (max-width: 720px) {
-		.editor {
-			grid-template-columns: 1fr;
-		}
+	.editor.json-mode { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+	@media (max-width: 760px) {
+		.editor, .editor.json-mode { grid-template-columns: 1fr; }
+		.mobile-tabs { display: flex; gap: 8px; position: sticky; top: 0; background: #fff; padding: 8px 0; z-index: 2; }
+		.editor:not(.show-preview) .preview { display: none; }
+		.editor.show-preview .controls { display: none; }
 	}
 	.controls {
+		border: 0; padding: 0; margin: 0; min-width: 0;
 		display: grid;
 		gap: 8px;
 	}
-	.controls h4 {
-		margin: 10px 0 2px;
-	}
+	details { border-bottom: 1px solid #ddd; padding-bottom: 12px; }
+	summary { cursor: pointer; padding: 12px 0; font-size: 14px; font-weight: 650; }
+	details .token { margin-top: 12px; }
 	.token {
 		display: grid;
 		grid-template-columns: 1fr auto;
@@ -505,29 +791,29 @@
 	}
 	.token label {
 		grid-column: 1 / -1;
-		font-size: 12px;
+		font-size: 13px;
+		font-weight: 600;
 	}
 	.token.invalid input {
-		outline: 2px solid #b91c1c;
+		outline: 2px solid #171717;
 	}
 	.preview-bar {
 		display: flex;
 		align-items: center;
+		flex-wrap: wrap;
 		gap: 10px;
-		margin-bottom: 8px;
+		margin-bottom: 12px;
+		font-size: 13px;
 	}
-	.width-toggle {
-		margin-left: auto;
-		font: inherit;
-		font-size: 12px;
-		background: none;
-		border: 1px solid var(--border, #ddd);
-		padding: 3px 10px;
-		cursor: pointer;
+	.width-toggle { font-size: 13px; background: none; color: #000; padding: 4px 0; min-height: 32px; text-decoration: underline; text-underline-offset: 4px; }
+	.preview { min-width: 0; position: sticky; top: 16px; }
+	@media (max-width: 760px) {
+		.preview { position: static; }
 	}
 	.preview-frame {
-		border: 1px solid var(--border, #ddd);
-		padding: 12px;
+		padding: 16px;
+		border: 1px solid #ddd;
+		max-height: 70vh;
 		overflow: auto;
 	}
 	.preview-frame.narrow {
@@ -537,15 +823,16 @@
 		min-height: 120px;
 	}
 	.actions {
+		position: sticky;
+		bottom: 0;
+		background: #fff;
+		padding: 12px 0;
+		z-index: 1;
 		display: flex;
 		align-items: center;
 		gap: 10px;
 		flex-wrap: wrap;
 	}
-	.secondary {
-		background: none;
-	}
-	.warning {
-		color: #92400e;
-	}
+	.secondary { background: none; color: #000; padding: 4px 0; text-decoration: underline; text-underline-offset: 4px; }
+	.warning { color: #000; font-weight: 600; }
 </style>

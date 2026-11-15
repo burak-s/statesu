@@ -899,7 +899,7 @@
 	<section class="narrow">
 		<a class="auth-brand" href="/">Statesu / Dashboard</a>
 		<h1>{authMode === 'login' ? 'Welcome back' : 'Create your account'}</h1>
-		<p>Manage your blogs and Markdown posts from here. Browsers without a session see the <a href="/">API documentation</a>.</p>
+		<p>Sign in to manage your blogs and posts.</p>
 		{#if notice}
 			<p class="ok" role="status">{notice}</p>
 			{#if canResend}
@@ -939,9 +939,8 @@
 				<a class="brand" href="/">Statesu</a>
 				<span class="email">{me.email}</span>
 			</div>
-			<div class="menu-label">Workspace</div>
-			<nav class="items" aria-label="Sections">
-				{#each VIEWS as item (item.id)}
+			<nav class="items" aria-label="Account">
+				{#each VIEWS.filter((item) => !item.needsBlog) as item (item.id)}
 					<button
 						type="button"
 						class="item"
@@ -949,29 +948,52 @@
 						onclick={() => openView(item.id)}
 					>
 						<span>{item.label}</span>
-						{#if item.id === 'blogs'}<span class="nav-count">{blogs.length}</span>{/if}
+						{#if item.id === 'blogs'}<span class="nav-count" aria-hidden="true">{blogs.length}</span>{/if}
 					</button>
 				{/each}
 			</nav>
+			{#if selectedBlog}
+				<div class="blog-workspace">
+					<div class="blog-switcher">
+						<label for="active-blog">Blog workspace</label>
+						<div class="blog-switcher-control">
+							<select id="active-blog" bind:value={selectedBlogId} onchange={() => selectBlog(selectedBlogId, view)}>
+								{#each blogs as blog (blog.id)}<option value={blog.id}>{blog.name}</option>{/each}
+							</select>
+							<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="m5 6 3-3 3 3M5 10l3 3 3-3" stroke="currentColor" stroke-width="1.5" /></svg>
+						</div>
+					</div>
+					<nav class="items" aria-label={`Blog: ${selectedBlog.name}`}>
+						{#each VIEWS.filter((item) => item.needsBlog) as item (item.id)}
+							<button
+								type="button"
+								class="item"
+								aria-current={view === item.id ? 'page' : undefined}
+								onclick={() => openView(item.id)}
+							>
+								{item.label}
+							</button>
+						{/each}
+					</nav>
+				</div>
+			{/if}
 			<div class="menu-footer">
-				<a href="/">API documentation ↗</a>
+				<a href="/docs/api">API documentation ↗</a>
 				<button type="button" class="link signout" onclick={signOut}>Sign out</button>
 			</div>
 		</aside>
 
 		<section class="content" aria-label="Dashboard content">
 			<header class="content-header">
-				<span class="eyebrow">Dashboard / {VIEWS.find((item) => item.id === view)?.label}</span>
-				{#if selectedBlog && (view === 'posts' || view === 'settings')}
-					<span class="current-blog">{selectedBlog.name}</span>
-				{/if}
+				<div>
+					<h1>{VIEWS.find((item) => item.id === view)?.label}</h1>
+					<p class="page-description">{view === 'blogs' ? 'Manage your blogs and choose one to work on.' : view === 'posts' ? 'Write, edit, and publish your posts.' : view === 'settings' ? 'Configure your blog, website, and embedded posts.' : 'Manage access for CLI tools and scripts.'}</p>
+				</div>
 			</header>
 			{#if view === 'blogs'}
 				<div class="view">
-					<h2>Blogs</h2>
-					<p>One blog holds its own posts and delivery rules. Click one to work on it.</p>
 					{#if blogs.length === 0}
-						<p>No blogs yet. Create your first one below:</p>
+						<div class="empty-state"><strong>No blogs yet</strong><p>Create your first blog below to start writing.</p></div>
 					{:else}
 						<div class="table-scroll">
 							<table class="blogs-table" aria-label="Blogs">
@@ -1001,7 +1023,8 @@
 						</div>
 					{/if}
 					{#if blogDeleteError}<p class="error" role="alert">{blogDeleteError}</p>{/if}
-					<h3>New blog</h3>
+					<section class="panel" aria-labelledby="create-blog-heading">
+					<h2 id="create-blog-heading">New blog</h2>
 					<form class="stack" onsubmit={createBlog} aria-label="Create a blog">
 						<label for="blog-name">Name</label>
 						<input id="blog-name" bind:value={newBlogName} placeholder="Writing desk" required />
@@ -1010,38 +1033,30 @@
 						<div><button type="submit">Create blog</button></div>
 						{#if newBlogError}<p class="error" role="alert">{newBlogError}</p>{/if}
 					</form>
+					</section>
 				</div>
 			{:else if view === 'posts'}
 				<div class="view">
-					<h2>Posts</h2>
-					<p>{#if selectedBlog}Public API: <code>/public/blogs/{selectedBlog.slug}</code> — {/if}Published posts are readable by anyone; drafts stay private.</p>
+
 					{#if !selectedBlog}
 						<p class="note">Create a blog in <button type="button" class="link" onclick={() => openView('blogs')}>Blogs</button> first.</p>
 					{:else}
 						<div class="toolbar">
-							<div class="blog-select">
-							<label for="post-blog">Blog</label>
-							<select id="post-blog" bind:value={selectedBlogId} onchange={() => selectBlog(selectedBlogId)}>
-								{#each blogs as blog (blog.id)}
-									<option value={blog.id}>{blog.name}</option>
-								{/each}
-							</select>
-							</div>
-							<button type="button" onclick={startDraftPost}>+ New post</button>
+							<span class="list-summary">{posts.length} {posts.length === 1 ? 'post' : 'posts'}</span>
+							<button type="button" onclick={startDraftPost}>New post</button>
 						</div>
 						{#if postsError}<p class="error" role="alert">{postsError}</p>{/if}
 						{#if posts.length === 0}
-							<p>Nothing here yet.</p>
+							<div class="empty-state"><strong>No posts yet</strong><p>Create a post to start writing. Drafts stay private until you publish them.</p></div>
 						{:else}
 							<div class="table-scroll">
 								<table>
-									<thead><tr><th>Slug</th><th>Title</th><th>Status</th><th>Published</th><th></th></tr></thead>
+									<thead><tr><th scope="col">Post</th><th scope="col">Status</th><th scope="col">Published</th><th scope="col">Actions</th></tr></thead>
 									<tbody>
 										{#each posts as post (post.id)}
 											<tr>
-												<td><code>{post.slug}</code></td>
-												<td>{post.title}</td>
-												<td><span class="pill">{post.status}</span></td>
+												<td><button type="button" class="link post-title" onclick={() => startEditPost(post)}>{post.title}</button><code class="post-slug">/{post.slug}</code></td>
+												<td><span class="pill" class:published={post.status === 'published'}>{post.status}</span></td>
 												<td>{formatTimestamp(post.published_at)}</td>
 												<td class="actions">
 													<button type="button" class="link" onclick={() => startEditPost(post)}>Edit</button>
@@ -1059,7 +1074,7 @@
 
 						{#if editor}
 							<div class="editor">
-								<h3>{editor.id ? 'Edit post' : 'New post'}</h3>
+								<h2>{editor.id ? 'Edit post' : 'New post'}</h2>
 								<form class="stack" onsubmit={(e) => { e.preventDefault(); saveEditor(); }}>
 									<div class="row wide">
 										<span><label for="post-slug">Slug</label>
@@ -1136,34 +1151,34 @@
 				</div>
 			{:else if view === 'settings'}
 				<div class="view">
-					<h2>Settings</h2>
 					{#if !selectedBlog}
 						<p class="note">Create a blog in <button type="button" class="link" onclick={() => openView('blogs')}>Blogs</button> first.</p>
 					{:else}
-						<p>{selectedBlog.name}</p>
-						<h3>Domain and allowed origins</h3>
-						<p>Your site's exact origin(s) may call the public API from JavaScript. One origin per line: <code>scheme://host[:port]</code>, no paths, exact match. Punycode hosts and IPv6 literals like <code>[::1]:5173</code> are allowed; ports 1–65535. The domain is only metadata.</p>
+						<nav class="section-nav" aria-label="Settings sections">
+							<a href="#delivery">Domain & origins</a><a href="#storage">Media storage</a><a href="#integration">Website integration</a><a href="#appearance">Appearance</a>
+						</nav>
+						<section class="panel" id="delivery" aria-labelledby="delivery-heading">
+						<h2 id="delivery-heading">Domain and allowed origins</h2>
+						<p>Choose which websites can read your posts through the public API.</p>
 						<form class="stack" onsubmit={(e) => { e.preventDefault(); saveSettings(); }}>
 							<label for="blog-domain">Domain (optional)</label>
 							<input id="blog-domain" bind:value={domainDraft} placeholder="example.com" />
 							{#if selectedBlog.domain}
 								<div><button type="button" class="link" onclick={removeDomain}>Remove domain</button></div>
 							{/if}
-							<p>Clear the domain and save to remove it, or use Remove domain. Allowed origins are managed separately.</p>
+							<p class="field-help">For reference only. Leave blank to remove; this does not change allowed origins.</p>
 							<label for="blog-origins">Allowed origins</label>
-							<textarea id="blog-origins" rows="4" bind:value={originsDraft} placeholder={'https://example.com\nhttp://localhost:5173'}></textarea>
+							<textarea id="blog-origins" rows="4" bind:value={originsDraft} aria-describedby="origins-help" placeholder={'https://example.com\nhttp://localhost:5173'}></textarea>
+							<p class="field-help" id="origins-help">One exact origin per line, including https:// or http:// and an optional port. No paths.</p>
 							<div><button type="submit">Save settings</button></div>
 							{#if settingsSaved}<p class="ok">Settings saved.</p>{/if}
 
 							{#if settingsError}<p class="error" role="alert">{settingsError}</p>{/if}
-							<div>
-								<button type="button" disabled={!integrationOriginValid} onclick={allowIntegrationOrigin}>
-									Add site origin to the list
-								</button>
-							</div>
 						</form>
-						<h3 class="mt">Media storage</h3>
-							<p>Images upload into one bucket per blog: Statesu's own, or your own Cloudflare R2 bucket. Switching never moves already uploaded media.</p>
+						</section>
+						<section class="panel" id="storage" aria-labelledby="storage-heading">
+						<h2 id="storage-heading">Media storage</h2>
+							<p>Choose where new images are uploaded. Existing images stay where they are.</p>
 							{#if storageError}<p class="error" role="alert">{storageError}</p>{/if}
 							{#if storageNote}<p class="ok" role="status">{storageNote}</p>{/if}
 							<p>
@@ -1219,14 +1234,14 @@
 									</form>
 								</div>
 							</details>
+						</section>
 					{/if}
 				</div>
-				<div class="view">
-					<h3>Website integration</h3>
-					{#if !selectedBlog}
-						<p class="note">Create a blog first.</p>
-					{:else}
-						<p>Connect your website once: every published post becomes one URL there. Your site serves one HTML template under the posts path, and the embed script below fetches and renders the content safely.</p>
+				{#if selectedBlog}
+				<section class="panel" id="integration" aria-labelledby="integration-heading">
+					<h2 id="integration-heading">Website integration</h2>
+						<p>Show published posts on your website with a single embed snippet.</p>
+						<div class="stack">
 						<label for="integration-origin">Website address</label>
 						<input id="integration-origin" bind:value={integrationOriginDraft} placeholder="burakselcuk.me" />
 						{#if integrationOriginDraft.trim() !== '' && !integrationOriginValid}
@@ -1238,12 +1253,15 @@
 							<p class="error" role="alert">The posts path must be a single lowercase segment (like /blog) or exactly /.</p>
 						{/if}
 						{#if integrationOriginDraft.trim() === ''}
-							<p class="note">Enter the address of the site that should show these posts. If your address isn't the dashboard origin, add it to Allowed origins above.</p>
+							<p class="field-help">Enter the website where you want your posts to appear.</p>
 						{/if}
 						{#if integrationExampleUrl}
 							<p>Example: <code>{integrationExampleUrl}</code></p>
 						{/if}
-						<p class="note">The embed script is served by this Statesu deployment, so your site needs no extra API origin — only its own address allowed above. Your hosting must route the posts path to one HTML page containing the target element.</p>
+						<div><button type="button" class="secondary" disabled={!integrationOriginValid} onclick={allowIntegrationOrigin}>Add site origin to the list</button></div>
+						<p class="field-help">Then use Save settings in Domain and allowed origins to apply the change.</p>
+						</div>
+						<p>Your hosting must route all URLs under the posts path to an HTML page containing this snippet.</p>
 						<div>
 							<button type="button" disabled={!integrationSnippet || !integrationOriginValid} onclick={copyIntegration}>{integrationCopied ? 'Copied!' : 'Copy code'}</button>
 						</div>
@@ -1254,22 +1272,14 @@
 								<pre><code>{integrationSnippet}</code></pre>
 							</div>
 						</details>
-					{/if}
-				</div>
-				<div class="view">
-					<h3>Embed appearance</h3>
-					{#if !selectedBlog}
-						<p class="note">Create a blog first.</p>
-					{:else}
-						<EmbedAppearance blog={selectedBlog} save={saveAppearance} />
-					{/if}
-				</div>
+				</section>
+				<section class="panel" id="appearance" aria-label="Embed appearance">
+					<EmbedAppearance blog={selectedBlog} save={saveAppearance} />
+				</section>
+				{/if}
 			{:else}
 				<div class="view">
-					<h2>API tokens</h2>
-					<p>Personal access tokens let CLI tools and scripts call the content API on your behalf with <code>Authorization: Bearer …</code>. They are shown once, can have an expiration date or never expire, and can be revoked anytime. Browsers should use your session, never a token.</p>
-				</div>
-				<div class="view">
+					<p>Use tokens with <code>Authorization: Bearer …</code>. Keep them private; browser apps should use session sign-in instead.</p>
 					{#if freshPat}
 						<p class="ok">Token created. Copy the secret now — it will not be shown again:</p>
 						<p><code class="secret">{freshPat.secret}</code></p>
@@ -1277,11 +1287,11 @@
 					{/if}
 					{#if patError}<p class="error" role="alert">{patError}</p>{/if}
 					{#if pats.length === 0}
-						<p>No tokens yet.</p>
+						<div class="empty-state"><strong>No API tokens yet</strong><p>Create a token below to connect a CLI tool or script.</p></div>
 					{:else}
 						<div class="table-scroll">
 							<table>
-								<thead><tr><th>Name</th><th>Scopes</th><th>Created</th><th>Expires</th><th>Last used</th><th></th></tr></thead>
+								<thead><tr><th scope="col">Name</th><th scope="col">Scopes</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">Actions</th></tr></thead>
 								<tbody>
 									{#each pats as pat (pat.id)}
 										<tr>
@@ -1302,7 +1312,9 @@
 							</table>
 						</div>
 					{/if}
-					<h3 class="mt">New token</h3>
+					<section class="panel" aria-labelledby="new-token-heading">
+					<h2 id="new-token-heading">New token</h2>
+					<p>Copy your token when it is created. The secret is only shown once.</p>
 					<form class="stack" onsubmit={createPat}>
 						<label for="pat-name">Name</label>
 						<input id="pat-name" bind:value={patName} placeholder="ci-script" maxlength="64" required />
@@ -1322,6 +1334,7 @@
 						</label>
 						<div><button type="submit" disabled={patBusy}>Create token</button></div>
 					</form>
+					</section>
 				</div>
 			{/if}
 		</section>
@@ -1338,27 +1351,50 @@
 	}
 
 	/* Keep documentation layout rules out of the dashboard workspace. */
-	.dashboard { width: min(100% - 96px, 1440px); margin-inline: auto; color: #000; background: #fff; }
+	.dashboard { width: min(100% - 64px, 1440px); margin-inline: auto; color: #000; background: #fff; font-size: 14px; line-height: 1.6; }
 	.dashboard p, .dashboard ul, .dashboard code { color: inherit; }
+	.dashboard p { max-width: 70ch; }
+	.dashboard .note, .dashboard .field-help { font-size: 13px; line-height: 1.6; }
+	/* Sections are separated by whitespace, not containers. */
+	.dashboard .panel { display: grid; gap: 16px; padding: 0; margin-top: 48px; scroll-margin-top: 32px; min-width: 0; }
+	.view > .section-nav + .panel { margin-top: 16px; }
+	.panel > h2, .editor > h2 { margin: 0; font-size: 18px; font-weight: 650; letter-spacing: -.02em; }
+	.panel > p { margin: 0; font-size: 14px; }
+	.nav-count, .list-summary { font-size: 13px; font-variant-numeric: tabular-nums; }
+	.section-nav { display: flex; flex-wrap: wrap; gap: 12px 24px; padding: 0; }
+	.section-nav a { padding: 4px 0; font-size: 13px; text-decoration: underline; text-underline-offset: 4px; }
+	.empty-state { display: grid; gap: 8px; padding: 24px 0; }
+	.post-slug { display: block; margin-top: 4px; }
+	.post-title { text-align: left; }
 	.dashboard :focus-visible { outline: 2px solid #000; outline-offset: 5px; }
 	.dashboard section { padding: 0; border: 0; }
-	.content-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding-bottom: 24px; margin-bottom: 32px; }
-	.content-header .eyebrow { font-size: 10px; }
-	.current-blog { font-size: 12px; font-weight: 600; padding: 4px 10px; overflow-wrap: anywhere; }
-	.menu-label { margin: 8px 12px -12px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .12em; }
-	.nav-count { margin-left: auto; font-size: 11px; }
+	.content-header { display: flex; justify-content: space-between; align-items: start; flex-wrap: wrap; gap: 24px; padding-bottom: 0; margin-bottom: 40px; }
+	.content-header h1 { margin: 0; font-size: 30px; font-weight: 650; line-height: 1.2; letter-spacing: -.035em; }
+	.content-header .page-description { margin: 12px 0 0; font-size: 14px; }
+	.nav-count { margin-left: auto; }
 	.menu-footer { display: grid; gap: 14px; margin-top: 32px; padding: 20px 12px 0; font-size: 12px; }
-	.menu-footer a { color: inherit; text-decoration: none; }
-	.toolbar { display: flex; justify-content: space-between; align-items: end; gap: 20px; margin: 20px 0; }
-	.blog-select { display: grid; gap: 8px; flex: 1; max-width: 320px; }
+	.menu-footer a { color: inherit; text-decoration: underline; }
+	.toolbar { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin: 0 0 8px; }
+	.blog-workspace { display: grid; gap: 12px; min-width: 0; padding-top: 24px; border-top: 1px solid #ddd; }
+	.blog-workspace .item { padding-left: 24px; }
+	.blog-switcher { min-width: 0; padding: 0 12px; }
+	.blog-switcher label { display: block; margin-bottom: 4px; font-size: 11px; font-weight: 500; letter-spacing: .08em; text-transform: uppercase; }
+	.blog-switcher-control { position: relative; }
+	.blog-switcher-control select { appearance: none; background: transparent; color: inherit; padding: 8px 24px 8px 0; font-weight: 600; cursor: pointer; text-overflow: ellipsis; }
+	.blog-switcher-control select:hover { text-decoration: underline; text-underline-offset: 4px; }
+	.blog-switcher-control svg { position: absolute; right: 0; top: 50%; transform: translateY(-50%); pointer-events: none; }
+	@media (forced-colors: active) {
+		.blog-switcher-control select { appearance: auto; }
+		.blog-switcher-control svg { display: none; }
+	}
 	.auth-brand { font-size: 12px; font-weight: 700; }
 	.narrow h1 { font-size: clamp(28px, 4vw, 40px); margin: 28px 0 16px; }
 
 	.shell {
 		display: grid;
-		grid-template-columns: 228px minmax(0, 1fr);
+		grid-template-columns: 220px minmax(0, 1fr);
 		gap: clamp(32px, 4vw, 64px);
-		padding-block: 48px 96px;
+		padding-block: 32px 80px;
 		min-height: 100dvh;
 		align-items: start;
 	}
@@ -1369,12 +1405,12 @@
 		flex-direction: column;
 		gap: 24px;
 		min-width: 0;
-		padding: 24px 12px 20px;
+		padding: 8px 20px 24px 0;
 		background: #fff;
 	}
-	.identity { display: grid; gap: 6px; padding-inline: 12px; }
-	.identity .brand { font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: 13px; color: inherit; text-decoration: none; }
-	.email { font-size: 12px; word-break: break-all; }
+	.identity { display: grid; gap: 6px; padding: 0 12px 20px; }
+	.identity .brand { font-weight: 750; letter-spacing: -.035em; font-size: 23px; color: inherit; text-decoration: none; }
+	.email { font-size: 13px; overflow-wrap: anywhere; }
 	.items { display: grid; gap: 2px; }
 	.item {
 		display: flex; align-items: center; gap: 8px;
@@ -1388,11 +1424,8 @@
 	.signout { margin-top: auto; text-align: left; }
 	.content { min-width: 0; padding-block: 8px; }
 	.view { display: grid; gap: 16px; align-content: start; }
-	.view + .view { margin-top: 32px; padding-top: 28px; }
-	.view h2 { margin: 0; font-size: 30px; }
-	.view h3 { margin: 20px 0 0; font-size: 18px; }
-	.view p { margin: 0; font-size: 14px; line-height: 1.8; }
-	.view > h3 { padding-top: 24px; }
+	.view h2 { margin: 0; font-size: 18px; font-weight: 650; }
+	.view p { margin: 0; font-size: 14px; line-height: 1.6; }
 	.view .mt { margin-top: 28px; }
 
 	.dashboard .narrow { max-width: 480px; margin: 80px auto; padding: 32px; }
@@ -1400,57 +1433,63 @@
 	.narrow form { margin-top: 28px; }
 	.stack { display: grid; gap: 10px; margin-block: 8px; max-width: 640px; }
 	.stack > label:not(:first-child) { margin-top: 12px; }
-	label { font-size: 12px; font-weight: 600; }
+	label { font-size: 13px; font-weight: 600; }
 	.editor .stack { max-width: none; }
 	.stack input, .stack textarea, .editor input, .editor textarea, select {
-		font: inherit; font-size: 14px; padding: 11px 14px; border: 0; border-radius: 0; background: #000; color: #fff; width: 100%; min-width: 0; accent-color: #000;
+		font: inherit; font-size: 14px; line-height: 1.5; padding: 12px 14px; border: 0; border-radius: 0; background: #000; color: #fff; width: 100%; min-width: 0; accent-color: #000;
 	}
-	input::placeholder, textarea::placeholder { color: #fff; opacity: 1; }
-	.check input { appearance: none; width: 16px; height: 16px; padding: 0; flex: 0 0 16px; background: #000; cursor: pointer; }
-	.check input:checked::after { content: '✓'; display: block; color: #fff; font-size: 12px; line-height: 16px; text-align: center; }
+	input::placeholder, textarea::placeholder { color: #fff; opacity: .7; }
+	.stack .check input { width: 16px; height: 16px; padding: 0; flex: 0 0 16px; cursor: pointer; }
 	.stack textarea, .editor textarea { font-family: var(--mono); font-size: 13px; resize: vertical; }
 	.row { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-block: 12px 6px; }
 	.row.wide { align-items: start; }
 	.row.wide span { display: grid; gap: 4px; min-width: 0; flex: 1; }
 	.check { display: flex; gap: 8px; align-items: center; }
-	.check input { width: auto; }
-	button { font: inherit; font-size: 13px; font-weight: 600; line-height: 1.6; padding: 11px 18px; border: 0; border-radius: 0; background: #000; color: #fff; cursor: pointer; }
+	button { font: inherit; font-size: 13px; font-weight: 600; line-height: 1.5; padding: 12px 18px; border: 0; border-radius: 0; background: #000; color: #fff; cursor: pointer; min-height: 40px; }
 	button:hover:not(:disabled) { text-decoration: underline; text-underline-offset: 4px; }
-	button.link { background: none; border: 0; color: inherit; padding: 0; text-decoration: underline; text-underline-offset: 4px; }
+	button.link, button.secondary { background: none; color: inherit; padding: 4px 0; min-height: 32px; text-decoration: underline; text-underline-offset: 4px; }
+	button.link:hover:not(:disabled), button.secondary:hover:not(:disabled) { text-decoration-thickness: 2px; }
 	button:disabled { cursor: not-allowed; opacity: .5; }
 	.media-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 	.media-toolbar p { flex-basis: 100%; }
 	.media-list ul { list-style: none; padding: 0; display: grid; gap: 12px; }
-	.media-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 12px; border: 1px solid #ddd; }
-	.media-thumbnail { width: 64px; height: 64px; object-fit: contain; background: #f5f5f5; }
+	.media-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 12px 0; }
+	.media-thumbnail { width: 64px; height: 64px; object-fit: contain; }
 	.media-warning { flex-basis: 100%; }
-	.view .error, .narrow .error { color: #fff; background: #000; padding: 10px 12px; }
+	.dashboard .error { color: #fff; background: #000; padding: 12px 16px; }
 	.ok { font-weight: 600; }
 	.secret { display: inline-block; font-family: var(--mono); font-size: 13px; padding: 6px 10px; word-break: break-all; }
 	.blogs-table { width: 100%; text-align: left; }
-	.blogs-table th, .blogs-table td { vertical-align: top; border-bottom: 1px solid #ddd; }
+	.blogs-table th, .blogs-table td { vertical-align: top; }
 	.blogs-table td:not(.actions) { overflow-wrap: anywhere; max-width: 280px; }
 	.blog-name { text-align: left; }
-	.delete-confirmation td { background: #f5f5f5; }
+	.delete-confirmation td { padding-top: 0; }
 	.delete-confirmation button { margin-top: 8px; }
 	.narrow a { color: inherit; text-decoration: underline; text-underline-offset: 4px; }
 	.identity .brand { text-decoration: none; }
-	.pill { display: inline-block; padding: 1px 10px; font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+	.pill { display: inline-block; font-size: 13px; text-transform: capitalize; white-space: nowrap; }
+	.pill.published { font-weight: 700; }
 	.actions { white-space: nowrap; }
-	.actions button + button { margin-left: 14px; }
-	.editor { margin-top: 32px; padding-top: 24px; }
-	.table-scroll { overflow-x: auto; margin: 8px 0; }
-	table { font-size: 12px; }
-	th, td { padding: 16px; border: 0; }
-	th { color: #000; font-size: 10px; }
-	td:first-child { min-width: 140px; }
-	td:nth-child(2) { white-space: normal; min-width: 160px; }
+	.actions button + button { margin-left: 16px; }
+	.editor { margin-top: 48px; padding: 0; }
+	.table-scroll { overflow-x: auto; margin: 0; }
+	table { font-size: 14px; }
+	th, td { padding: 16px 24px 16px 0; border: 0; vertical-align: middle; }
+	th:last-child, td:last-child { padding-right: 0; }
+	th { color: #000; font-size: 13px; font-weight: 600; text-transform: none; letter-spacing: 0; white-space: nowrap; }
+	td:first-child { min-width: 160px; }
+	td:nth-child(2) { white-space: normal; min-width: 100px; }
+	details { min-width: 0; }
+	summary { padding: 8px 0; cursor: pointer; font-size: 13px; font-weight: 600; text-decoration: underline; text-underline-offset: 4px; }
+	.details-body { padding: 16px 0 0; }
+	pre { margin: 8px 0 0; padding: 0; overflow-x: auto; line-height: 1.7; }
+	.preview { padding: 24px 0; }
+	.preview h4 { margin: 0 0 16px; font-size: 14px; }
 
 	/* Keep navigation readable without squeezing the content on smaller screens. */
 	@media (max-width: 900px) {
 		.dashboard { width: calc(100% - 48px); }
 		.shell { grid-template-columns: 1fr; gap: 28px; padding-block: 24px 64px; }
-		.menu-label { display: none; }
 		.menu {
 			position: static;
 			z-index: 10;
@@ -1458,23 +1497,27 @@
 			flex-wrap: wrap;
 			align-items: center;
 			gap: 12px;
-			padding: 10px 12px;
+			padding: 0 0 20px;
 		}
-		.identity { flex: 1; }
+		.identity { flex: 1; padding: 0 0 8px; }
+		.blog-workspace { width: 100%; padding-top: 16px; }
+		.blog-workspace .item { padding-left: 12px; }
+		.blog-switcher { width: min(220px, 100%); padding: 0; }
 		.items { display: flex; flex-wrap: nowrap; gap: 4px; width: 100%; overflow-x: auto; }
 		.item { width: auto; flex: 1 0 auto; justify-content: center; white-space: nowrap; }
 		.menu-footer { display: flex; margin: 0; padding: 4px 12px; border: 0; width: 100%; justify-content: space-between; }
-		.identity .brand { font-size: 12px; }
+		.identity .brand { font-size: 22px; }
 		.signout { margin-top: 0; white-space: nowrap; }
 	}
 	@media (max-width: 540px) {
 		.dashboard { width: calc(100% - 32px); }
 		.shell { padding-top: 16px; gap: 24px; }
 		.content-header { margin-bottom: 24px; padding-bottom: 16px; }
-		.dashboard .narrow { margin-block: 24px; padding: 24px; }
+		.dashboard .narrow { margin-block: 24px; padding: 16px 0; }
+		.dashboard .panel, .editor { padding: 0; margin-top: 40px; }
+		.blog-switcher { width: 100%; }
 		.row.wide { flex-direction: column; align-items: stretch; }
 		.toolbar { flex-wrap: wrap; align-items: stretch; }
-		.blog-select { max-width: none; flex-basis: 100%; }
 		.toolbar > button { width: 100%; }
 		.item { padding-inline: 10px; font-size: 12px; }
 	}

@@ -24,8 +24,7 @@
 		['/public/blogs/{blogSlug}/posts/{postSlug}', 'One published post with Markdown.']
 	];
 	const setup = `API=https://statesu.com
-# Bash: use a dashboard token, not your account password.
-read -r -s -p 'API token: ' TOKEN; printf '\\n'`;
+read -r -s -p 'API token: ' TOKEN && echo`;
 	const create = `curl --fail-with-body -sS "$API/blogs" \\
   -H "Authorization: Bearer $TOKEN" \\
   -H 'Content-Type: application/json' \\
@@ -64,7 +63,7 @@ curl --fail-with-body -sS "$API/blogs/BLOG_ID/media" \
 
 <section>
 	<h2>Create a blog and publish</h2>
-	<p>These Bash examples use curl 7.76 or newer. Save the returned blog ID for post requests.</p>
+	<p>Save the returned blog ID for post requests.</p>
 	<Terminal code={create} />
 	<Terminal code={publish} />
 	<p>Omit <code>status</code> for a draft. Slugs use lowercase letters, digits and hyphens (up to 63 bytes). Titles are single-line text up to 256 bytes; Markdown is limited to 256 KiB. Editing published content changes it live.</p>
@@ -84,6 +83,8 @@ curl --fail-with-body -sS "$API/blogs/BLOG_ID/media" \
 		</table>
 	</div>
 	<p>Set origins with <code>{'{"origins":["https://example.com"]}'}</code>. The request replaces the entire list. See <a href="/docs/integration">web integration</a> for CORS and hosting setup.</p>
+	<p>Read saved styling from <code>GET /blogs</code>. Write it with <code>PUT /blogs/&#123;blogID&#125;/appearance</code> using a write-capable bearer token or authenticated dashboard session. The CLI uses this same API.</p>
+	<Terminal code={'{\n  "embed_appearance": {\n    "version": 1,\n    "markdown": {\n      "code_background": "#f3f4f6",\n      "code_padding": 16,\n      "quote_border_width": 3,\n      "table_cell_padding": 8\n    }\n  }\n}'} language="json" />
 	<p>Set the embed appearance with <code>{'{"embed_appearance":{"version":1,…}}'}</code> — the full document replaces whatever was saved, and an explicit <code>{'{"embed_appearance":null}'}</code> clears it. Values are validated tokens, never CSS text; the shape and bounds are documented in the <a href="/docs/integration">web integration guide</a>. Blog responses include the saved appearance as <code>embed_appearance</code> when one is set.</p>
 </section>
 
@@ -91,7 +92,7 @@ curl --fail-with-body -sS "$API/blogs/BLOG_ID/media" \
 	<h2>Media</h2>
 	<p>Upload JPEG, PNG or WebP images as the raw request body; the stored file is re-encoded and published on the blog's storage bucket. The response includes the permanent public URL to paste into Markdown, plus responsive variant metadata for renderers that support it.</p>
 	<Terminal code={uploadMedia} />
-	<p>Byte limits: one file up to <code>STATESU_MAX_MEDIA_BYTES</code> (default 10 MiB) and a per-user budget (<code>STATESU_MAX_TOTAL_MEDIA_BYTES</code>, default 256 MiB). Aspect-ratio variants at 640/1280/1920 px are generated server-side; failed uploads are cleaned up. Deleting media removes its objects; posts that still reference the URL lose the image, so confirm before deleting. Content types are not trusted: the server sniffs the bytes, and animated WebP and oversized images are rejected.</p>
+	<p>Each file can be up to 10 MiB, with a 256 MiB total budget per user. Aspect-ratio variants at 640/1280/1920 px are generated server-side; failed uploads are cleaned up. Deleting media removes its objects; posts that still reference the URL lose the image, so confirm before deleting. Animated WebP and oversized images are rejected.</p>
 	<h3>Your own R2 bucket</h3>
 	<p>Blog-scoped storage connections point Statesu at a Cloudflare R2 bucket you own: an account ID, bucket name, statesu-dedicated key prefix, public HTTPS media base URL and an R2 API token scoped to that single bucket. Secrets are stored encrypted and never returned. Media already uploaded stays on its original bucket; switching the preference only affects new uploads.</p>
 </section>
@@ -120,7 +121,7 @@ curl --fail-with-body -sS "$API/blogs/BLOG_ID/media" \
 		<li><strong>400 / 413 / 415:</strong> invalid input, oversized body or unsupported content type.</li>
 		<li><strong>401 / 403:</strong> invalid authentication, insufficient permissions or an account quota reached.</li>
 		<li><strong>404 / 409:</strong> unknown resource or a conflicting slug/domain.</li>
-		<li><strong>429:</strong> rate limit reached; respect the <code>Retry-After</code> header. Registration allows 3 attempts/hour and 10/day per IP. Uploads allow 20 attempts/minute and 200/day per IP, plus 10/minute and 100/day per user across all blogs and tokens. Failed uploads count; deleting files does not refund attempts. These rolling-window counters reset on server restart; IPv6 addresses share a /64 budget.</li>
+		<li><strong>429:</strong> rate limit reached; respect the <code>Retry-After</code> header. Uploads allow 20 attempts/minute and 200/day per IP, plus 10/minute and 100/day per user; failed uploads count toward these limits.</li>
 		<li><strong>500:</strong> server error.</li>
 	</ul>
 	<p>Deleting a post removes it from public delivery but keeps its slug reserved. Revoking a token invalidates subsequent requests immediately.</p>
