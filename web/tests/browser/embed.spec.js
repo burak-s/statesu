@@ -85,7 +85,7 @@ async function signIn(page, account) {
 	await page.getByLabel('Email', { exact: true }).fill(account.email);
 	await page.getByLabel('Password', { exact: true }).fill(PASSWORD);
 	await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-	await expect(page.getByRole('navigation', { name: 'Sections' })).toBeVisible();
+	await expect(page.getByRole('navigation', { name: 'Account', exact: true })).toBeVisible();
 }
 
 test('CLI login signs in on the website, approves access, exchanges PKCE code and logs out', async ({ page, request, account }) => {
@@ -177,12 +177,18 @@ test('dashboard keeps a single title, sharp unframed sections and a usable layou
 		return route.fulfill({ json: data });
 	});
 	await page.goto(`${API}/dashboard`);
-	const navigation = page.getByRole('navigation', { name: 'Sections', exact: true });
+	const navigation = page.getByRole('navigation', { name: 'Account', exact: true });
 	await expect(navigation).toBeVisible();
+	// Blog views live in a per-blog navigation that appears once a blog is
+	// selected; select one through the workspace switcher.
+	const blogNavigation = page.getByRole('navigation', { name: /^Blog: / });
 	for (const view of ['Blogs', 'Posts', 'Settings', 'API tokens']) {
-		await navigation.getByRole('button', { name: view, exact: true }).click();
-		await expect(page.getByRole('heading', { level: 1 })).toHaveText(view);
-		await expect(navigation.getByRole('button', { name: view, exact: true })).toHaveAttribute('aria-current', 'page');
+		const scope = ['Posts', 'Settings'].includes(view) ? blogNavigation : navigation;
+		await scope.getByRole('button', { name: view, exact: true }).click();
+		// The appearance preview renders its own sample h1 inside a shadow
+		// root; only the content header carries the view title.
+		await expect(page.locator('.content-header').getByRole('heading', { level: 1 })).toHaveText(view);
+		await expect(scope.getByRole('button', { name: view, exact: true })).toHaveAttribute('aria-current', 'page');
 		for (const width of [390, 768, 1024, 1440]) {
 			await page.setViewportSize({ width, height: 900 });
 			expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -194,7 +200,7 @@ test('dashboard keeps a single title, sharp unframed sections and a usable layou
 		}
 		if (view === 'Settings') {
 			await expect(page.getByRole('heading', { name: 'Embed appearance', exact: true })).toHaveCount(1);
-			await page.getByLabel('Current blog').selectOption('layout-blog-2');
+			await page.getByLabel('Blog workspace', { exact: true }).selectOption('layout-blog-2');
 			await expect(page.getByLabel('Domain (optional)', { exact: true })).toHaveValue('');
 			await page.getByRole('link', { name: 'Website integration', exact: true }).click();
 			await expect(page).toHaveURL(/#integration$/);
@@ -646,16 +652,18 @@ test('authenticated stored XSS stays inert through update, publish, dashboard an
 
 	await signIn(page, account);
 	await page.getByRole('button', { name: 'Browser blog', exact: true }).click();
-	const row = page.getByRole('row').filter({ has: page.getByText('stored-xss', { exact: true }) });
+	const row = page.getByRole('row').filter({ hasText: 'stored-xss' });
 	await expect(row).toContainText(title);
 	await row.getByRole('button', { name: 'Edit', exact: true }).click();
 	await expect(page.getByLabel('Title', { exact: true })).toHaveValue(title);
 	await expect(page.getByLabel('Markdown', { exact: true })).toHaveValue(updated);
 	// The media renderer makes dashboard previews legitimate user content:
-	// hostile Markdown still yields zero script-bearing elements, and any
-	// rendered image is sanitized by the shared allowlist contract.
-	await expect(page.locator('main svg, main math, main iframe')).toHaveCount(0);
-	const previewImages = page.locator('main img');
+	// hostile Markdown still yields zero script-bearing elements in the
+	// editor's rendered preview, and any image is sanitized by the shared
+	// allowlist contract. App chrome (the blog-switcher chevron svg) sits
+	// outside the editor, so scoping keeps the assertion about content.
+	await expect(page.locator('.editor svg, .editor math, .editor iframe')).toHaveCount(0);
+	const previewImages = page.locator('.editor img, .statesu-body img');
 	const preview = await previewImages.evaluateAll((images) =>
 		images.map((img) => ({
 			handlers: [...img.attributes].some((attribute) => attribute.name.toLowerCase().startsWith('on')),
