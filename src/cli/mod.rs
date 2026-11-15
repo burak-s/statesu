@@ -208,6 +208,9 @@ pub enum PostCommand {
     Edit {
         /// Post id or slug.
         target: String,
+        /// Replace the Markdown with this file instead of opening an editor.
+        #[arg(long)]
+        file: Option<PathBuf>,
     },
     /// Publish a post.
     Publish {
@@ -883,19 +886,28 @@ async fn post_command(shared: &Shared, command: PostCommand) -> Result<(), CliEr
             }
             print!("{}", post.content_markdown);
         }
-        PostCommand::Edit { target } => {
+        PostCommand::Edit { target, file } => {
             let blog_id = authed.blog_id().await?;
             let post = authed.post(&blog_id, &target).await?;
             if post.status == STATUS_PUBLISHED {
                 eprintln!("warning: editing a published post changes the live content immediately");
             }
-            let draft = editor::open(&post.content_markdown)?;
-            if draft.content == post.content_markdown {
-                draft.discard();
+            // `--file` keeps edit usable in scripts: no editor and no tty.
+            let (content, path, scratch) = match file {
+                Some(path) => (
+                    std::fs::read_to_string(&path).map_err(CliError::Io)?,
+                    path,
+                    false,
+                ),
+                None => {
+                    let draft = editor::open(&post.content_markdown)?;
+                    (draft.content, draft.path, true)
+                }
+            };
+            if content == post.content_markdown {
                 println!("No changes.");
                 return Ok(());
             }
-            let editor::Draft { path, content } = draft;
             let patch = client::Patch {
                 content_markdown: Some(content),
                 ..Default::default()
@@ -906,7 +918,11 @@ async fn post_command(shared: &Shared, command: PostCommand) -> Result<(), CliEr
                 .await
             {
                 Ok(updated) => {
-                    let _ = std::fs::remove_file(&path);
+                    // The editor's scratch copy is only cleaned for its own
+                    // temp file; an explicit --file stays untouched.
+                    if scratch {
+                        let _ = std::fs::remove_file(&path);
+                    }
                     updated
                 }
                 Err(err) => {
@@ -1195,6 +1211,17 @@ mod tests {
         assert!(
             Cli::try_parse_from(["stscli", "login", "--server", "https://statesu.com"]).is_ok()
         );
+    }
+
+    #[test]
+    fn edit_accepts_a_markdown_file_without_a_terminal() {
+        let cli = Cli::try_parse_from(["stscli", "post", "edit", "hello", "--file", "post.md"])
+            .expect("edit parses --file");
+        let Command::Post(PostCommand::Edit { target, file }) = cli.command else {
+            panic!("unexpected command");
+        };
+        assert_eq!(target, "hello");
+        assert_eq!(file.as_deref(), Some(std::path::Path::new("post.md")));
     }
 
     #[test]
