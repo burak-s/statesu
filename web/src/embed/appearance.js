@@ -32,11 +32,112 @@ export const RANGES = {
 	corner_radius: [0, 32]
 };
 
+// Shared by the parser and dashboard. Dimensions are pixels unless a unit is specified.
+export const MARKDOWN_FIELDS = [
+	['paragraph_spacing', 'Paragraph spacing', 'Text', 96],
+	['heading_spacing', 'Heading spacing', 'Text', 96],
+	['list_indent', 'List indentation', 'Lists', 96],
+	['list_spacing', 'List item spacing', 'Lists', 96],
+	['code_color', 'Text color', 'Code blocks'],
+	['code_background', 'Background', 'Code blocks'],
+	['code_padding', 'Padding', 'Code blocks', 96],
+	['inline_code_color', 'Text color', 'Inline code'],
+	['inline_code_background', 'Background', 'Inline code'],
+	['quote_color', 'Text color', 'Blockquotes'],
+	['quote_background', 'Background', 'Blockquotes'],
+	['quote_border_color', 'Border color', 'Blockquotes'],
+	['quote_border_width', 'Border width', 'Blockquotes', 8],
+	['quote_padding', 'Padding', 'Blockquotes', 96],
+	['table_header_background', 'Header background', 'Tables'],
+	['table_border_color', 'Border color', 'Tables'],
+	['table_cell_padding', 'Cell padding', 'Tables', 96],
+	['image_radius', 'Corner radius', 'Images', 32],
+	['rule_color', 'Divider color', 'Dividers'],
+	['rule_width', 'Divider thickness', 'Dividers', 8],
+	['link_decoration', 'Underline', 'Links', ['underline', 'none']],
+	['link_hover_decoration', 'Hover underline', 'Links', ['underline', 'none']],
+	['link_hover_color', 'Hover color', 'Links'],
+	['code_size', 'Font size', 'Code blocks', 48, 8],
+	['code_border_color', 'Border color', 'Code blocks'],
+	['code_border_width', 'Border width', 'Code blocks', 8],
+	['code_radius', 'Corner radius', 'Code blocks', 32],
+	['inline_code_size', 'Font size', 'Inline code', 48, 8],
+	['inline_code_padding', 'Padding', 'Inline code', 96],
+	['inline_code_radius', 'Corner radius', 'Inline code', 32],
+	['inline_code_border_color', 'Border color', 'Inline code'],
+	['inline_code_border_width', 'Border width', 'Inline code', 8],
+	['table_header_color', 'Header text color', 'Tables'],
+	['table_stripe_background', 'Alternating row background', 'Tables'],
+	['image_width', 'Width', 'Images', 100, 1, '%'],
+	['image_align', 'Alignment', 'Images', ['left', 'center', 'right']],
+	['image_spacing', 'Vertical spacing', 'Images', 96],
+	...[1, 2, 3, 4, 5, 6].flatMap((level) => [
+		[`h${level}_size`, 'Font size', `H${level}`, 96, 12],
+		[`h${level}_weight`, 'Font weight', `H${level}`, 900, 100, ''],
+		[`h${level}_spacing`, 'Vertical spacing', `H${level}`, 96]
+	])
+].map(([key, label, section, max, min = 0, unit = 'px']) => ({
+	key, label, section, color: max === undefined,
+	options: Array.isArray(max) ? max : undefined,
+	max: Array.isArray(max) ? undefined : max, min, unit
+}));
+for (const field of MARKDOWN_FIELDS) {
+	if (!field.color && !field.options) RANGES[field.key] = [field.min, field.max];
+}
+
 /// UA heading font sizes; the scale token multiplies them so an unset scale
 /// reproduces the browser default exactly.
 const HEADING_SIZES = { h1: '2em', h2: '1.5em', h3: '1.17em', h4: '1em', h5: '.83em', h6: '.67em' };
 
-const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/i;
+const HEX = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i;
+
+// Keyword defaults: the spelling of "keep the built-in or website-inherited
+// look". stripDefaults removes them before saving, mirroring the server.
+const COLOR_SENTINELS = new Set(['inherit', 'revert', 'currentcolor', 'transparent']);
+
+function hexFromChannels(channels) {
+	return `#${channels.map((channel) => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function colorChannel(part) {
+	const value = Number(part);
+	return Number.isInteger(value) && value >= 0 && value <= 255 ? value : null;
+}
+
+/// `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, `rgb()` and `rgba()`, all
+/// normalized to lowercase `#rrggbb[aa]`. Keyword defaults return undefined
+/// so they drop out of normalized documents.
+function cssColor(value) {
+	if (typeof value !== 'string') return null;
+	const text = value.trim().toLowerCase();
+	if (COLOR_SENTINELS.has(text)) return undefined;
+	if (text.startsWith('#')) {
+		if (!HEX.test(text)) return null;
+		const hex = text.slice(1);
+		const expanded = hex.length <= 4
+			? hex.split('').map((ch) => ch + ch).join('')
+			: hex;
+		return `#${expanded}`;
+	}
+	const functionMatch = text.match(/^rgba?\(([^)]+)\)$/);
+	if (!functionMatch) return null;
+	const parts = functionMatch[1].split(',');
+	if (parts.length !== 3 && parts.length !== 4) return null;
+	const channels = [];
+	for (const part of parts.slice(0, 3)) {
+		const channel = colorChannel(part.trim());
+		if (channel === null) return null;
+		channels.push(channel);
+	}
+	if (parts.length === 4) {
+		const alpha = Number(parts[3].trim());
+		if (!Number.isFinite(alpha) || alpha < 0 || alpha > 1) return null;
+		channels.push(Math.round(alpha * 255));
+	} else {
+		channels.push(255);
+	}
+	return hexFromChannels(channels);
+}
 
 /**
  * Validates the delivered appearance document. Returns a normalized shape
@@ -60,15 +161,131 @@ export function parseAppearance(value) {
 			line_height: percent(RANGES.line_height)
 		}, ['font', 'google_font']),
 		layout: group(value.layout, {
-			max_width: pixel(RANGES.max_width),
+			max_width: (raw) => raw === 'none' ? undefined : pixel(RANGES.max_width)(raw),
 			padding: pixel(RANGES.padding),
 			spacing: pixel(RANGES.spacing)
 		}),
+		markdown: group(value.markdown, Object.fromEntries(MARKDOWN_FIELDS.map((field) =>
+			[field.key, field.color ? color : field.options
+				? (value) => field.options.includes(value) ? value : null
+				: pixel(RANGES[field.key])]
+		))),
 		decoration: group(value.decoration, {
 			border_width: pixel(RANGES.border_width),
 			corner_radius: pixel(RANGES.corner_radius)
 		})
 	};
+}
+
+export const APPEARANCE_FIELDS = {
+	colors: ['text', 'background', 'link', 'muted', 'border'],
+	typography: ['body_size', 'heading_scale', 'line_height'],
+	layout: ['max_width', 'padding', 'spacing'],
+	decoration: ['border_width', 'corner_radius'],
+	markdown: MARKDOWN_FIELDS.map((field) => field.key)
+};
+
+// The stock look, written out field by field: keywords name defaults that
+// resolve to inherited values (text color, spacing), numbers are fixed px or
+// percentages. Saving a document of only defaults is equivalent to clearing.
+const APPEARANCE_DEFAULTS = {
+	colors: {
+		text: 'inherit', background: 'transparent', link: 'revert',
+		muted: 'currentcolor', border: 'rgba(0,0,0,.15)'
+	},
+	typography: { body_size: 100, heading_scale: 100, line_height: 160 },
+	layout: { max_width: 'none', padding: 0, spacing: 'revert' },
+	decoration: { border_width: 0, corner_radius: 0 },
+	markdown: {
+		paragraph_spacing: 'revert', heading_spacing: 'revert',
+		list_indent: 40, list_spacing: 0,
+		code_color: 'inherit', code_background: 'transparent', code_padding: 0,
+		code_size: 'revert', code_border_color: 'currentcolor', code_border_width: 0, code_radius: 0,
+		inline_code_color: 'inherit', inline_code_background: 'transparent',
+		inline_code_size: 'revert', inline_code_padding: 0, inline_code_radius: 0,
+		inline_code_border_color: 'currentcolor', inline_code_border_width: 0,
+		quote_color: 'inherit', quote_background: 'transparent',
+		quote_border_color: 'currentcolor', quote_border_width: 0, quote_padding: 0,
+		table_header_background: 'transparent', table_header_color: 'inherit',
+		table_border_color: 'transparent', table_cell_padding: 1, table_stripe_background: 'transparent',
+		link_decoration: 'underline', link_hover_decoration: 'underline', link_hover_color: 'revert',
+		image_radius: 0, image_width: 'revert', image_align: 'center', image_spacing: 'revert',
+		rule_color: 'currentcolor', rule_width: 1,
+		...Object.fromEntries([1, 2, 3, 4, 5, 6].flatMap((level) => [
+			[`h${level}_size`, 'revert'], [`h${level}_weight`, 700], [`h${level}_spacing`, 'revert']
+		]))
+	}
+};
+
+export function appearanceTemplate(value) {
+	return {
+		version: APPEARANCE_VERSION,
+		...Object.fromEntries(Object.entries(APPEARANCE_FIELDS).map(([group, keys]) => [
+			group, Object.fromEntries(keys.map((key) => [key, value?.[group]?.[key] ?? APPEARANCE_DEFAULTS[group][key]]))
+		]))
+	};
+}
+
+/// Removes keyword defaults (and normalizes color spellings) so drafts sent
+/// to the API carry only real values; the server applies the same rule.
+export function stripDefaults(document) {
+	if (!document || typeof document !== 'object' || Array.isArray(document)) return document;
+	const out = { ...document };
+	for (const [group, keys] of Object.entries(APPEARANCE_FIELDS)) {
+		const fields = out[group];
+		if (!fields || typeof fields !== 'object' || Array.isArray(fields)) continue;
+		const next = { ...fields };
+		for (const key of Object.keys(next)) {
+				const raw = next[key];
+			if (raw === undefined) { delete next[key]; continue; }
+			if (typeof raw !== 'string') continue;
+			const text = raw.trim().toLowerCase();
+			const field = group === 'markdown' ? MARKDOWN_FIELDS.find((candidate) => candidate.key === key) : undefined;
+			if (field?.options) continue;
+			const isColor = group === 'colors' || field?.color;
+			if (isColor) {
+				const normalized = cssColor(raw);
+				// The global background keeps an explicit `transparent`: it is
+				// stored and delivered as a real value, unlike the sentinels.
+				if (normalized === undefined && !(group === 'colors' && key === 'background')) delete next[key];
+				else if (normalized !== null && normalized !== undefined) next[key] = normalized;
+			} else if (text === 'revert' || (text === 'none' && key === 'max_width')) {
+				delete next[key];
+			}
+		}
+		out[group] = next;
+		if (Object.keys(next).length === 0) delete out[group];
+	}
+	return out;
+}
+
+// Strict authoring validation for JSON mode. Delivery parsing remains forgiving
+// for old embeds, but edits must never silently drop unknown or malformed fields.
+export function validateAppearanceDocument(value) {
+	if (value === null) return '';
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return 'Expected an appearance object or null.';
+	if (value.version !== APPEARANCE_VERSION) return 'version must be 1.';
+	const groups = Object.keys(APPEARANCE_FIELDS);
+	for (const key of Object.keys(value)) {
+		if (key !== 'version' && !groups.includes(key)) return `Unknown field: ${key}. Use the appearance document without an embed_appearance wrapper.`;
+	}
+	for (const name of groups) {
+		const fields = value[name];
+		if (fields === undefined || fields === null) continue;
+		if (typeof fields !== 'object' || Array.isArray(fields)) return `${name} must be an object.`;
+		for (const [key, entry] of Object.entries(fields)) {
+			if (!APPEARANCE_FIELDS[name].includes(key)) return `Unknown field: ${name}.${key}.`;
+			const parsed = parseAppearance({ version: 1, [name]: { [key]: entry === null ? undefined : entry } });
+			if (parsed[name] === null) {
+				const field = name === 'markdown' ? MARKDOWN_FIELDS.find((field) => field.key === key) : undefined;
+				const expected = field?.options ? field.options.join(' or ')
+					: RANGES[key] ? `an integer between ${RANGES[key][0]} and ${RANGES[key][1]}`
+					: `a #rgb or #rrggbb color${name === 'colors' && key === 'background' ? ', or transparent' : ''}`;
+				return `${name}.${key} must be ${expected}.`;
+			}
+		}
+	}
+	return '';
 }
 
 /// Applies one group with per-field validators; unknown or invalid fields
@@ -93,16 +310,12 @@ function group(value, fields, retired = []) {
 
 /// `#rgb` and `#rrggbb`, normalized to lowercase `#rrggbb`.
 function color(value) {
-	if (typeof value !== 'string' || !HEX.test(value)) return null;
-	const hex = value.slice(1);
-	const expanded = hex.length === 3 ? hex.split('').map((ch) => ch + ch).join('') : hex;
-	return `#${expanded.toLowerCase()}`;
+	return cssColor(value);
 }
 
 /// Colors plus the literal `transparent`.
 function background(value) {
-	if (value === 'transparent') return 'transparent';
-	if (typeof value === 'string' && value.toLowerCase() === 'transparent') return 'transparent';
+	if (typeof value === 'string' && value.trim().toLowerCase() === 'transparent') return 'transparent';
 	return color(value);
 }
 
@@ -117,6 +330,7 @@ function pixel([min, max]) {
 }
 
 function integer(value, min, max) {
+	if (value === 'revert') return undefined;
 	if (typeof value !== 'number' || !Number.isInteger(value)) return null;
 	return value >= min && value <= max ? value : null;
 }
@@ -159,6 +373,17 @@ export function appearanceVars(appearance) {
 		vars['--statesu-internal-border-width'] = px(decoration.border_width);
 		vars['--statesu-internal-corner-radius'] = px(decoration.corner_radius);
 	}
+	if (appearance.markdown) {
+		for (const field of MARKDOWN_FIELDS) {
+			const value = appearance.markdown[field.key];
+			if (value === undefined) continue;
+			vars[`--statesu-internal-${field.key.replaceAll('_', '-')}`] = field.color || field.options ? value : `${value}${field.unit}`;
+			if (field.key === 'image_align') {
+				vars['--statesu-internal-image-margin-left'] = value === 'left' ? '0' : 'auto';
+				vars['--statesu-internal-image-margin-right'] = value === 'right' ? '0' : 'auto';
+			}
+		}
+	}
 	for (const key of Object.keys(vars)) {
 		if (vars[key] === undefined) delete vars[key];
 	}
@@ -193,6 +418,36 @@ export function applyAppearance(root, appearance) {
  * Also shared with the dashboard's appearance preview, which must style
  * posts exactly like production embeds.
  */
+function markdownStyles() {
+	const token = (name, fallback) => `var(--statesu-${name}, var(--statesu-internal-${name}, ${fallback}))`;
+	return `
+.statesu-v2 .statesu-body p { margin-block: ${token('paragraph-spacing', 'var(--statesu-spacing, var(--statesu-internal-spacing, revert))')}; }
+.statesu-v2 .statesu-body :is(h1,h2,h3,h4,h5,h6) { margin-block: ${token('heading-spacing', 'revert')}; }
+.statesu-v2 .statesu-body :is(ul,ol) { padding-inline-start: ${token('list-indent', '40px')}; }
+.statesu-v2 .statesu-body li { margin-block: ${token('list-spacing', '0')}; }
+.statesu-v2 .statesu-body pre { color: ${token('code-color', 'inherit')}; background: ${token('code-background', 'transparent')}; padding: ${token('code-padding', '0')}; }
+.statesu-v2 .statesu-body :not(pre) > code { color: ${token('inline-code-color', 'inherit')}; background: ${token('inline-code-background', 'transparent')}; }
+.statesu-v2 .statesu-body blockquote { color: ${token('quote-color', 'inherit')}; background: ${token('quote-background', 'transparent')}; border-inline-start: ${token('quote-border-width', '0')} solid ${token('quote-border-color', 'currentColor')}; padding: ${token('quote-padding', '0')}; }
+.statesu-v2 .statesu-body table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; }
+.statesu-v2 .statesu-body :is(th,td) { padding: ${token('table-cell-padding', '1px')}; border: 1px solid ${token('table-border-color', 'transparent')}; }
+.statesu-v2 .statesu-body th { background: ${token('table-header-background', 'transparent')}; }
+.statesu-v2 .statesu-body img { border-radius: ${token('image-radius', '0')}; }
+.statesu-v2 .statesu-body hr { border: 0; border-top: ${token('rule-width', '1px')} solid ${token('rule-color', 'currentColor')}; }
+.statesu-v2 .statesu-body a { text-decoration: ${token('link-decoration', 'underline')}; }
+.statesu-v2 .statesu-body a:any-link:is(:hover,:focus-visible) { color: ${token('link-hover-color', 'var(--statesu-link-color, var(--statesu-internal-link, revert))')}; text-decoration: ${token('link-hover-decoration', token('link-decoration', 'underline'))}; }
+.statesu-v2 .statesu-body pre { font-size: ${token('code-size', 'revert')}; border: ${token('code-border-width', '0')} solid ${token('code-border-color', 'currentColor')}; border-radius: ${token('code-radius', '0')}; }
+.statesu-v2 .statesu-body :not(pre) > code { font-size: ${token('inline-code-size', 'revert')}; padding: ${token('inline-code-padding', '0')}; border-radius: ${token('inline-code-radius', '0')}; border: ${token('inline-code-border-width', '0')} solid ${token('inline-code-border-color', 'currentColor')}; }
+.statesu-v2 .statesu-body th { color: ${token('table-header-color', 'inherit')}; }
+.statesu-v2 .statesu-body tbody tr:nth-child(even) { background: ${token('table-stripe-background', 'transparent')}; }
+.statesu-v2 .statesu-body img { width: ${token('image-width', 'revert')}; margin-block: ${token('image-spacing', '1.25em')}; }
+.statesu-v2 .statesu-body img:not(.linked-in) { margin-left: ${token('image-margin-left', 'auto')}; margin-right: ${token('image-margin-right', 'auto')}; }
+${Object.entries(HEADING_SIZES).map(([tag, size]) => `.statesu-v2 .statesu-body ${tag} {
+ font-size: var(--statesu-heading-size, ${token(`${tag}-size`, `calc(${size} * var(--statesu-heading-scale, var(--statesu-internal-heading-scale, 1)))`)});
+ font-weight: ${token(`${tag}-weight`, 'bold')}; margin-block: ${token(`${tag}-spacing`, token('heading-spacing', 'revert'))};
+}`).join('\n')}
+`;
+}
+
 export function embedStyles() {
 	return `
 .statesu-v2 {
@@ -258,6 +513,7 @@ ${Object.entries(HEADING_SIZES).map(([tag, size]) =>
 	text-decoration: underline;
 	cursor: pointer;
 }
+${markdownStyles()}
 @media (prefers-reduced-motion: reduce) {
 	.statesu-v2 .statesu-body img { transition: none; }
 }`;

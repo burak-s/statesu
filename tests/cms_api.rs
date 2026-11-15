@@ -360,7 +360,10 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
                 "colors": { "text": "#1A2B3C", "link": "#7c3aed", "background": "transparent" },
                 "typography": { "body_size": 110 },
                 "layout": { "max_width": 720, "padding": 24 },
-                "decoration": { "corner_radius": 8 }
+                "decoration": { "corner_radius": 8 },
+                "markdown": { "code_background": "#ABC", "table_cell_padding": 12, "quote_border_width": 4,
+                    "h1_size": 48, "h1_weight": 600, "link_decoration": "none", "image_align": "right",
+                    "table_stripe_background": "#DEF", "inline_code_border_width": 1 }
             }
         }),
     )
@@ -371,6 +374,14 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
     assert_eq!(appearance["colors"]["text"], "#1a2b3c");
     assert_eq!(appearance["colors"]["background"], "transparent");
     assert_eq!(appearance["typography"]["body_size"], 110);
+    assert_eq!(appearance["markdown"]["code_background"], "#aabbcc");
+    assert_eq!(appearance["markdown"]["table_cell_padding"], 12);
+    assert_eq!(appearance["markdown"]["quote_border_width"], 4);
+    assert_eq!(appearance["markdown"]["h1_size"], 48);
+    assert_eq!(appearance["markdown"]["h1_weight"], 600);
+    assert_eq!(appearance["markdown"]["link_decoration"], "none");
+    assert_eq!(appearance["markdown"]["image_align"], "right");
+    assert_eq!(appearance["markdown"]["table_stripe_background"], "#ddeeff");
     assert!(appearance["typography"].get("font").is_none());
     assert!(appearance["typography"].get("google_font").is_none());
 
@@ -390,6 +401,36 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
         json!({ "link": "#00ff00" })
     );
 
+    // Keyword defaults mean "use the default": they are stripped at the write
+    // edge, so only real values are stored; an all-default document clears.
+    let keyworded = set_appearance(
+        &app,
+        &token,
+        &id,
+        json!({ "embed_appearance": {
+            "version": 1,
+            "colors": { "text": "Inherit", "background": "transparent", "link": "revert", "muted": "currentcolor", "border": "rgba(0,0,0,.15)" },
+            "typography": { "body_size": 100, "heading_scale": "revert", "line_height": 160 },
+            "layout": { "max_width": "none", "padding": 0, "spacing": "revert" },
+            "decoration": { "border_width": 0, "corner_radius": 0 },
+            "markdown": { "h1_size": "revert", "h1_weight": 700, "code_background": "transparent",
+                "code_color": "inherit", "image_align": "center", "link_decoration": "underline" }
+        } }),
+    )
+    .await;
+    assert_eq!(keyworded.status, StatusCode::OK, "{}", keyworded.text());
+    assert_eq!(
+        keyworded.json()["embed_appearance"],
+        json!({
+            "version": 1,
+            "colors": { "background": "transparent", "border": "#00000026" },
+            "typography": { "body_size": 100, "line_height": 160 },
+            "layout": { "padding": 0 },
+            "decoration": { "border_width": 0, "corner_radius": 0 },
+            "markdown": { "h1_weight": 700, "image_align": "center", "link_decoration": "underline" }
+        })
+    );
+
     // Explicit null clears the saved appearance.
     let cleared = set_appearance(&app, &token, &id, json!({ "embed_appearance": null })).await;
     assert_eq!(cleared.status, StatusCode::OK, "{}", cleared.text());
@@ -401,6 +442,11 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
         json!({ "embed_appearance": { "version": 1, "typography": { "body_size": 500 } } }),
         json!({ "embed_appearance": { "version": 1, "colors": { "link": "red" } } }),
         json!({ "embed_appearance": { "version": 1, "layout": { "max_width": 100 } } }),
+        json!({ "embed_appearance": { "version": 1, "markdown": { "code_background": "red" } } }),
+        json!({ "embed_appearance": { "version": 1, "markdown": { "table_cell_padding": 97 } } }),
+        json!({ "embed_appearance": { "version": 1, "markdown": { "quote_border_width": 9 } } }),
+        json!({ "embed_appearance": { "version": 1, "markdown": { "h1_size": 97 } } }),
+        json!({ "embed_appearance": { "version": 1, "markdown": { "h1_weight": 99 } } }),
     ] {
         set_appearance(&app, &token, &id, bad)
             .await

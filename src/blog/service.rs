@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use uuid::Uuid;
 
-use crate::blog::BlogRow;
 use crate::blog::appearance::{self as appearance_json, EmbedAppearance};
 use crate::blog::repo::BlogRepository;
+use crate::blog::BlogRow;
 use crate::clock::Clock;
 use crate::error::Error;
 use crate::ids::{parse_uuid_v7, valid_slug};
@@ -147,8 +147,15 @@ where
         where
             D: serde::Deserializer<'de>,
         {
-            let inner = <EmbedAppearance as serde::Deserialize>::deserialize(deserializer)?;
-            Ok(Some(inner))
+            // Keyword defaults (`inherit`, `revert`, …) name the default, so
+            // they are dropped here, before the strict shape parse; a
+            // document left without styling means "clear".
+            let mut inner = <serde_json::Value as serde::Deserialize>::deserialize(deserializer)?;
+            appearance_json::strip_default_sentinels(&mut inner);
+            appearance_json::drop_empty_groups(&mut inner);
+            let parsed = serde_json::from_value::<EmbedAppearance>(inner)
+                .map_err(serde::de::Error::custom)?;
+            Ok(Some(parsed))
         }
     }
 

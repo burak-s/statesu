@@ -207,7 +207,9 @@ async fn public_blog_profile_delivers_saved_appearance() {
             "embed_appearance": {
                 "version": 1,
                 "colors": { "text": "#ABCDEF", "link": "#7c3aed" },
-                "typography": { "body_size": 110 }
+                "typography": { "body_size": 110 },
+                "markdown": { "code_background": "#ABC", "table_cell_padding": 8,
+                    "h2_size": 32, "link_hover_decoration": "underline", "image_width": 75, "image_align": "left" }
             }
         }),
     )
@@ -222,6 +224,21 @@ async fn public_blog_profile_delivers_saved_appearance() {
     assert_eq!(body["embed_appearance"]["version"], 1);
     assert_eq!(body["embed_appearance"]["colors"]["text"], "#abcdef");
     assert_eq!(body["embed_appearance"]["typography"]["body_size"], 110);
+    assert_eq!(
+        body["embed_appearance"]["markdown"]["code_background"],
+        "#aabbcc"
+    );
+    assert_eq!(
+        body["embed_appearance"]["markdown"]["table_cell_padding"],
+        8
+    );
+    assert_eq!(body["embed_appearance"]["markdown"]["h2_size"], 32);
+    assert_eq!(
+        body["embed_appearance"]["markdown"]["link_hover_decoration"],
+        "underline"
+    );
+    assert_eq!(body["embed_appearance"]["markdown"]["image_width"], 75);
+    assert_eq!(body["embed_appearance"]["markdown"]["image_align"], "left");
     assert!(body["embed_appearance"]["typography"].get("font").is_none());
     assert!(
         body["embed_appearance"]["typography"]

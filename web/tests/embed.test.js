@@ -5,7 +5,7 @@ import { JSDOM } from 'jsdom';
 // URL resolution and API building are DOM-free.
 import { parseBasePath, resolveSlug, SLUG_PATTERN } from '../src/embed/url.js';
 import { parseApiOrigin, apiUrl, blogApiUrl } from '../src/embed/api.js';
-import { parseAppearance, appearanceVars, applyAppearance, RANGES } from '../src/embed/appearance.js';
+import { parseAppearance, appearanceVars, applyAppearance, RANGES, MARKDOWN_FIELDS, embedStyles, validateAppearanceDocument, appearanceTemplate, stripDefaults } from '../src/embed/appearance.js';
 
 // DOMPurify needs a window before its factory is instantiated, so the
 // content module is imported once a jsdom window is installed as global.
@@ -105,16 +105,126 @@ test('appearance parser mirrors backend bounds', () => {
 		padding: [0, 96],
 		spacing: [0, 96],
 		border_width: [0, 8],
-		corner_radius: [0, 32]
+		corner_radius: [0, 32],
+		paragraph_spacing: [0, 96], heading_spacing: [0, 96],
+		list_indent: [0, 96], list_spacing: [0, 96], code_padding: [0, 96],
+		quote_border_width: [0, 8], quote_padding: [0, 96],
+		table_cell_padding: [0, 96], image_radius: [0, 32], rule_width: [0, 8],
+		code_size: [8, 48], code_border_width: [0, 8], code_radius: [0, 32],
+		inline_code_size: [8, 48], inline_code_padding: [0, 96], inline_code_radius: [0, 32], inline_code_border_width: [0, 8],
+		image_width: [1, 100], image_spacing: [0, 96],
+		...Object.fromEntries([1, 2, 3, 4, 5, 6].flatMap((n) => [
+			[`h${n}_size`, [12, 96]], [`h${n}_weight`, [100, 900]], [`h${n}_spacing`, [0, 96]]
+		]))
 	});
 	// Invalid fields reject their whole group, not the document; empty
 	// groups apply no tokens at all.
 	assert.equal(parseAppearance({ version: 1, layout: { padding: 97 } }).layout, null);
 	assert.equal(parseAppearance({ version: 1, typography: { unknown: 'comic sans' } }).typography, null);
-	assert.equal(parseAppearance({ version: 1, colors: { link: '#ff00' } }).colors, null);
+	assert.equal(parseAppearance({ version: 1, colors: { link: '#ff005' } }).colors, null);
 	assert.deepEqual(appearanceVars(parseAppearance({ version: 1, layout: { padding: 97 } })), {});
 	const ok = parseAppearance({ version: 1, colors: { link: '#ABC' } });
 	assert.equal(ok.colors.link, '#aabbcc');
+});
+
+test('every Markdown token validates and is consumed by the shared stylesheet', () => {
+	for (const field of MARKDOWN_FIELDS) {
+		const name = `--statesu-internal-${field.key.replaceAll('_', '-')}`;
+		const value = field.color ? '#ABC' : field.options ? field.options[0] : field.max;
+		const parsed = parseAppearance({ version: 1, markdown: { [field.key]: value } });
+		assert.equal(appearanceVars(parsed)[name], field.color ? '#aabbcc' : field.options ? value : `${value}${field.unit}`);
+		if (field.key === 'image_align') {
+			assert.equal(appearanceVars(parsed)['--statesu-internal-image-margin-left'], '0');
+			assert.ok(embedStyles().includes('--statesu-internal-image-margin-left'));
+		} else assert.ok(embedStyles().includes(name), `${field.key} must affect rendering`);
+		for (const invalid of field.color ? ['red', 'url(https://example.com)', '#abcde'] : field.options ? ['invalid', 1, true] : [field.min - 1, field.max + 1, 1.5, '2', true]) {
+			assert.equal(parseAppearance({ version: 1, markdown: { [field.key]: invalid } }).markdown, null);
+		}
+	}
+	assert.equal(parseAppearance({ version: 1, markdown: { unknown: 1 } }).markdown, null);
+});
+
+test('JSON template writes concrete defaults; keywords strip to an empty document', () => {
+	const template = appearanceTemplate(null);
+	assert.equal(validateAppearanceDocument(template), '');
+	assert.deepEqual(Object.keys(template.markdown), MARKDOWN_FIELDS.map((field) => field.key));
+	assert.deepEqual(Object.keys(template.colors), ['text', 'background', 'link', 'muted', 'border']);
+	assert.deepEqual(Object.keys(template.typography), ['body_size', 'heading_scale', 'line_height']);
+	assert.deepEqual(Object.keys(template.layout), ['max_width', 'padding', 'spacing']);
+	assert.deepEqual(Object.keys(template.decoration), ['border_width', 'corner_radius']);
+	// Inherited defaults are keywords, fixed ones are real values.
+	assert.equal(template.colors.text, 'inherit');
+	assert.equal(template.colors.background, 'transparent');
+	assert.equal(template.colors.link, 'revert');
+	assert.equal(template.colors.muted, 'currentcolor');
+	assert.equal(template.colors.border, 'rgba(0,0,0,.15)');
+	assert.equal(template.typography.body_size, 100);
+	assert.equal(template.typography.line_height, 160);
+	assert.equal(template.layout.max_width, 'none');
+	assert.equal(template.layout.spacing, 'revert');
+	assert.equal(template.decoration.border_width, 0);
+	assert.equal(template.markdown.list_indent, 40);
+	assert.equal(template.markdown.table_cell_padding, 1);
+	assert.equal(template.markdown.rule_width, 1);
+	assert.equal(template.markdown.h1_weight, 700);
+	assert.equal(template.markdown.h1_size, 'revert');
+	assert.equal(template.markdown.image_align, 'center');
+	assert.equal(template.markdown.code_background, 'transparent');
+	// Keyword defaults strip away; real fixed defaults survive, so a saved
+	// template pins exactly the stock values it displays.
+	const stripped = stripDefaults(structuredClone(template));
+	const sentinels = new Set(['inherit', 'revert', 'currentcolor', 'transparent', 'none']);
+	for (const [group, fields] of Object.entries(stripped)) {
+		if (group === 'version') continue;
+		for (const [key, value] of Object.entries(fields)) {
+			const isStockTransparent = group === 'colors' && key === 'background';
+			assert.ok(
+				isStockTransparent || !sentinels.has(value),
+				`${group}.${key} must not keep the default keyword`
+			);
+		}
+	}
+	assert.equal(stripped.colors.border, '#00000026');
+	assert.equal(stripped.typography.body_size, 100);
+	assert.equal(stripped.markdown.list_indent, 40);
+	assert.equal(stripped.markdown.h1_weight, 700);
+	assert.equal(stripped.markdown.image_align, 'center');
+	assert.equal(stripped.markdown.h1_size, undefined);
+	assert.equal(stripped.layout.spacing, undefined);
+	assert.equal(stripDefaults(null), null);
+	// Overrides survive the template and stripping; rgba normalizes to hex8.
+	const saved = { version: 1, colors: { link: '#123456' }, layout: { padding: 0, max_width: 720 }, markdown: { image_align: 'right', code_background: 'transparent' } };
+	const expanded = appearanceTemplate(saved);
+	assert.equal(expanded.colors.link, '#123456');
+	assert.equal(expanded.layout.padding, 0);
+	assert.equal(expanded.markdown.image_align, 'right');
+	assert.equal(expanded.markdown.h1_size, 'revert');
+	assert.equal(validateAppearanceDocument(expanded), '');
+	const saved_stripped = stripDefaults(expanded);
+	assert.deepEqual(saved_stripped.colors, {
+		background: 'transparent', link: '#123456', border: '#00000026'
+	});
+	assert.equal(saved_stripped.layout.padding, 0);
+	assert.equal(saved_stripped.layout.max_width, 720);
+	assert.equal(saved_stripped.markdown.image_align, 'right');
+	assert.ok(!JSON.stringify(saved_stripped).match(/inherit|revert|currentcolor/));
+	assert.deepEqual(
+		stripDefaults({ version: 1, colors: { border: 'rgba(0, 0, 0, .15)', background: 'transparent' } }).colors,
+		{ background: 'transparent', border: '#00000026' }
+	);
+	assert.equal(stripDefaults({ version: 1, colors: { border: 'rgba(0,0,0,.15)' } }).colors.border, '#00000026');
+});
+
+test('JSON authoring rejects unknown fields, bad shapes and invalid wire types', () => {
+	for (const valid of [null, { version: 1 }, { version: 1, markdown: { h1_size: 48, h1_weight: 600, link_decoration: 'none', image_align: 'right' } }, { version: 1, colors: null }]) {
+		assert.equal(validateAppearanceDocument(valid), '');
+	}
+	for (const invalid of [[], {}, 'text', { version: 2 }, { version: 1, css: 'x' },
+		{ version: 1, markdown: { unknown: null } }, { version: 1, markdown: [] },
+		{ version: 1, typography: { font: 'serif' } }, { version: 1, markdown: { h1_size: '32' } },
+		{ version: 1, markdown: { image_align: 'url(x)' } }, { embed_appearance: { version: 1 } }]) {
+		assert.notEqual(validateAppearanceDocument(invalid), '');
+	}
 });
 
 test('api origin policy: https always, http only for local hosts', () => {
