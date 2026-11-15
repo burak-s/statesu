@@ -103,6 +103,9 @@ pub enum MediaCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum BlogCommand {
+    /// Read, replace or reset the blog's shared embed styling (Markdown is unchanged).
+    #[command(subcommand)]
+    Appearance(AppearanceCommand),
     /// List your blogs.
     List,
     /// Create a blog.
@@ -117,6 +120,23 @@ pub enum BlogCommand {
     Use {
         /// Slug of the blog to select.
         slug: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AppearanceCommand {
+    /// Print the saved appearance JSON (null means built-in defaults).
+    Get,
+    /// Replace the entire appearance with a versioned JSON document.
+    Set {
+        #[arg(long)]
+        file: PathBuf,
+    },
+    /// Clear all saved styling and restore built-in defaults.
+    Reset {
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -385,6 +405,74 @@ async fn logout(server: Option<&str>) -> Result<(), CliError> {
 async fn blog_command(shared: &Shared, command: BlogCommand) -> Result<(), CliError> {
     let authed = Authed::new(shared).await?;
     match command {
+        BlogCommand::Appearance(command) => {
+            let blog_id = authed.blog_id().await?;
+            match command {
+                AppearanceCommand::Get => {
+                    let blogs = authed.api.blogs(&authed.pat).await?;
+                    let blog = blogs
+                        .iter()
+                        .find(|blog| blog.id == blog_id)
+                        .ok_or_else(|| CliError::usage("blog not found"))?;
+                    return print_json(&blog.embed_appearance);
+                }
+                AppearanceCommand::Set { file } => {
+                    let raw = std::fs::read_to_string(file).map_err(CliError::Io)?;
+                    let mut document: serde_json::Value =
+                        serde_json::from_str(&raw).map_err(|_| {
+                            CliError::usage(
+                                "invalid appearance JSON: expected a versioned appearance document",
+                            )
+                        })?;
+                    // Keyword defaults are the same contract the API applies;
+                    // a file of only defaults clears the appearance.
+                    crate::blog::appearance::strip_default_sentinels(&mut document);
+                    if crate::blog::appearance::is_default_document(&document) {
+                        let blog = authed
+                            .api
+                            .set_appearance(&authed.pat, &blog_id, None)
+                            .await?;
+                        return print_json(&blog.embed_appearance);
+                    }
+                    crate::blog::appearance::drop_empty_groups(&mut document);
+                    let mut appearance: crate::blog::appearance::EmbedAppearance =
+                        serde_json::from_value(document).map_err(|_| {
+                            CliError::usage(
+                                "invalid appearance JSON: expected a versioned appearance document",
+                            )
+                        })?;
+                    appearance.validate().map_err(|_| {
+                        CliError::usage(
+                            "invalid appearance: check version, hex colors and numeric ranges",
+                        )
+                    })?;
+                    let blog = authed
+                        .api
+                        .set_appearance(&authed.pat, &blog_id, Some(&appearance))
+                        .await?;
+                    return print_json(&blog.embed_appearance);
+                }
+                AppearanceCommand::Reset { yes } => {
+                    if !yes {
+                        if !std::io::stdin().is_terminal() {
+                            return Err(CliError::usage(
+                                "reset requires --yes outside an interactive terminal",
+                            ));
+                        }
+                        if !prompt("Reset this blog's appearance? Type 'yes' to confirm: ")?
+                            .eq_ignore_ascii_case("yes")
+                        {
+                            return Ok(());
+                        }
+                    }
+                    let blog = authed
+                        .api
+                        .set_appearance(&authed.pat, &blog_id, None)
+                        .await?;
+                    return print_json(&blog.embed_appearance);
+                }
+            }
+        }
         BlogCommand::List => {
             let blogs = authed.api.blogs(&authed.pat).await?;
             if authed.json {
@@ -971,6 +1059,41 @@ mod tests {
         assert!(
             Cli::try_parse_from(["stscli", "login", "--server", "https://statesu.com"]).is_ok()
         );
+    }
+
+    #[test]
+    fn appearance_commands_parse() {
+        for args in [
+            vec!["stscli", "blog", "appearance", "get", "--blog", "example"],
+            vec![
+                "stscli",
+                "blog",
+                "appearance",
+                "set",
+                "--file",
+                "appearance.json",
+            ],
+            vec!["stscli", "blog", "appearance", "reset", "--yes"],
+            vec!["stscli", "blog", "appearance", "save", "cozy"],
+            vec![
+                "stscli",
+                "blog",
+                "appearance",
+                "save",
+                "cozy",
+                "--file",
+                "a.json",
+            ],
+            vec!["stscli", "blog", "appearance", "list"],
+            vec!["stscli", "blog", "appearance", "apply", "cozy"],
+            vec!["stscli", "blog", "appearance", "delete", "cozy", "--yes"],
+        ] {
+            assert!(matches!(
+                Cli::try_parse_from(args).unwrap().command,
+                Command::Blog(BlogCommand::Appearance(_))
+            ));
+        }
+        assert!(Cli::try_parse_from(["stscli", "blog", "appearance", "set"]).is_err());
     }
 
     #[test]

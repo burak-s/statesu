@@ -20,6 +20,8 @@ pub struct Blog {
     pub name: String,
     pub slug: String,
     pub origins: Vec<String>,
+    #[serde(default)]
+    pub embed_appearance: Option<crate::blog::appearance::EmbedAppearance>,
 }
 
 /// Uploaded media as the server reports it; `public_url` is the address
@@ -184,6 +186,25 @@ impl Api {
                 .json(&CreateBlogBody { name, slug })
                 .send()
                 .await?,
+        )
+        .await
+    }
+
+    pub async fn set_appearance(
+        &self,
+        pat: &str,
+        blog_id: &str,
+        appearance: Option<&crate::blog::appearance::EmbedAppearance>,
+    ) -> Result<Blog, CliError> {
+        self.json_ok(
+            self.request(
+                reqwest::Method::PUT,
+                &format!("/blogs/{blog_id}/appearance"),
+                Some(pat),
+            )
+            .json(&serde_json::json!({ "embed_appearance": appearance }))
+            .send()
+            .await?,
         )
         .await
     }
