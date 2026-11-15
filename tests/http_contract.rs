@@ -38,6 +38,23 @@ async fn docs_static_contract_keeps_cache_security_and_404_semantics() {
             .is_some_and(|value| value.contains("frame-ancestors 'none'"))
     );
 
+    // Cloudflare injects Web Analytics after the response leaves the app.
+    // Both its script and beacon must survive the production CSP.
+    let csp = index.header("content-security-policy").expect("docs CSP");
+    let directive = |name: &str| {
+        csp.split(';')
+            .map(str::trim)
+            .find(|value| value.split_whitespace().next() == Some(name))
+            .expect("CSP directive")
+            .split_whitespace()
+            .skip(1)
+            .collect::<Vec<_>>()
+    };
+    assert!(directive("script-src").contains(&"https://static.cloudflareinsights.com"));
+    assert!(directive("connect-src").contains(&"https://cloudflareinsights.com"));
+    assert!(!directive("script-src").contains(&"*"));
+    assert!(!directive("connect-src").contains(&"*"));
+
     let asset = app.send(empty(Method::GET, "/_app/immutable/app.js")).await;
     assert_eq!(asset.status, StatusCode::OK);
     assert_eq!(

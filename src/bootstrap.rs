@@ -48,17 +48,17 @@ impl App {
 }
 
 /// Docs CSP compatible with the Svelte build: inline Svelte/JSON-LD scripts,
-/// Google Fonts stylesheets and font files, no other remote origins.
+/// Google Fonts stylesheets and font files, and Cloudflare Web Analytics.
 // The Turnstile origins cover the login/register widget: its script comes
 // from `challenges.cloudflare.com` and renders inside an iframe from the
 // same origin. The dashboard pages are served with these headers too; media
 // uploads live on user-controlled https buckets, so the preview's <img>
 // elements point there (img-src https:).
 const DOCS_CSP: &str = "default-src 'self'; \
-    script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com; \
+    script-src 'self' 'unsafe-inline' https://challenges.cloudflare.com https://static.cloudflareinsights.com; \
     style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
     font-src 'self' https://fonts.gstatic.com; \
-    connect-src 'self'; \
+    connect-src 'self' https://cloudflareinsights.com; \
     frame-src https://challenges.cloudflare.com; \
     img-src 'self' data: https:; \
     object-src 'none'; \
