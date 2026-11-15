@@ -49,3 +49,37 @@ impl RawBlogRow {
         })
     }
 }
+
+/// Storage shape for a named appearance variant (`blog_appearance_variants`).
+/// `appearance` is validated JSON, the same document shape the blog row
+/// stores.
+#[derive(Debug, Clone)]
+pub struct AppearanceVariantRow {
+    pub id: Uuid,
+    pub blog_id: Uuid,
+    pub name: String,
+    pub appearance: String,
+    pub created_at: i64,
+}
+
+/// `sqlx::FromRow` projection of the variant table before ID validation.
+#[derive(Debug, sqlx::FromRow)]
+pub struct RawVariantRow {
+    id: String,
+    blog_id: String,
+    name: String,
+    appearance: String,
+    created_at: i64,
+}
+
+impl RawVariantRow {
+    pub fn into_variant_row(self) -> Result<AppearanceVariantRow, Error> {
+        Ok(AppearanceVariantRow {
+            id: parse_uuid_v7(&self.id)?,
+            blog_id: parse_uuid_v7(&self.blog_id)?,
+            name: self.name,
+            appearance: self.appearance,
+            created_at: self.created_at,
+        })
+    }
+}

@@ -94,6 +94,14 @@ pub fn build_router(state: AppState) -> Router {
         .route("/blogs/{blog_id}", patch(blog::update).delete(blog::delete))
         .route("/blogs/{blog_id}/origins", put(blog::set_origins))
         .route("/blogs/{blog_id}/appearance", put(blog::set_appearance))
+        .route(
+            "/blogs/{blog_id}/appearance/variants",
+            post(blog::create_variant).get(blog::list_variants),
+        )
+        .route(
+            "/blogs/{blog_id}/appearance/variants/{variant_id}",
+            delete(blog::delete_variant),
+        )
         .route("/blogs/{blog_id}/posts", post(post::create).get(post::list))
         .route(
             "/blogs/{blog_id}/posts/{post_id}",

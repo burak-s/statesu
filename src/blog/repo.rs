@@ -1,6 +1,6 @@
 use sqlx::sqlite::SqlitePool;
 
-use crate::blog::{BlogRow, RawBlogRow};
+use crate::blog::{AppearanceVariantRow, BlogRow, RawBlogRow, RawVariantRow};
 use crate::error::{Error, InternalError};
 
 /// SQL-only access to the `blogs` and `blog_origins` tables. Orderings always
@@ -167,20 +167,6 @@ impl BlogRepository {
         Ok(())
     }
 
-    /// Deleting a blog cascades to its posts and allowed origins.
-    pub async fn delete(&self, id: &uuid::Uuid, owner_id: &uuid::Uuid) -> Result<(), Error> {
-        let result = sqlx::query("DELETE FROM blogs WHERE id = ? AND owner_id = ?")
-            .bind(id.to_string())
-            .bind(owner_id.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(|_| failed("blog delete"))?;
-        if result.rows_affected() != 1 {
-            return Err(Error::BlogNotFound);
-        }
-        Ok(())
-    }
-
     /// Deleting a blog together with its durable media-cleanup jobs, in
     /// one transaction: either the rows vanish and the bucket cleanup is
     /// durable, or nothing happened — never a deleted blog whose media
@@ -275,6 +261,94 @@ impl BlogRepository {
             .await
             .map_err(|_| failed("origin transaction commit"))
     }
+
+    /// Inserts a named variant; a duplicate `(blog_id, name)` maps to a
+    /// stable conflict error.
+    pub async fn insert_variant(
+        &self,
+        id: &uuid::Uuid,
+        blog_id: &uuid::Uuid,
+        name: &str,
+        appearance: &str,
+        created_at: i64,
+    ) -> Result<(), Error> {
+        let result = sqlx::query(
+            "INSERT INTO blog_appearance_variants \
+             (id, blog_id, name, appearance, created_at) VALUES (?, ?, ?, ?, ?)",
+        )
+        .bind(id.to_string())
+        .bind(blog_id.to_string())
+        .bind(name)
+        .bind(appearance)
+        .bind(created_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|err| insert_error(err, "appearance variant insert"))?;
+        if result.rows_affected() != 1 {
+            return Err(failed("appearance variant insert affected no row"));
+        }
+        Ok(())
+    }
+
+    /// Lists a blog's variants, newest first; ownership is checked by the
+    /// caller before this runs.
+    pub async fn list_variants(
+        &self,
+        blog_id: &uuid::Uuid,
+    ) -> Result<Vec<AppearanceVariantRow>, Error> {
+        sqlx::query_as::<_, RawVariantRow>(
+            "SELECT id, blog_id, name, appearance, created_at \
+             FROM blog_appearance_variants WHERE blog_id = ? \
+             ORDER BY created_at DESC, id DESC",
+        )
+        .bind(blog_id.to_string())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|_| failed("appearance variant list"))?
+        .into_iter()
+        .map(|raw| raw.into_variant_row())
+        .collect::<Result<Vec<_>, Error>>()
+    }
+
+    /// Deletes one variant; unknown and foreign ids read as `None`.
+    pub async fn delete_variant(
+        &self,
+        variant_id: &uuid::Uuid,
+        blog_id: &uuid::Uuid,
+    ) -> Result<bool, Error> {
+        let result =
+            sqlx::query("DELETE FROM blog_appearance_variants WHERE id = ? AND blog_id = ?")
+                .bind(variant_id.to_string())
+                .bind(blog_id.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(|_| failed("appearance variant delete"))?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub async fn count_variants(&self, blog_id: &uuid::Uuid) -> Result<i64, Error> {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM blog_appearance_variants WHERE blog_id = ?",
+        )
+        .bind(blog_id.to_string())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|_| failed("appearance variant count"))
+    }
+
+    /// Deleting a blog cascades to its posts and allowed origins.
+    pub async fn delete(&self, id: &uuid::Uuid, owner_id: &uuid::Uuid) -> Result<(), Error> {
+        let result = sqlx::query("DELETE FROM blogs WHERE id = ? AND owner_id = ?")
+            .bind(id.to_string())
+            .bind(owner_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(|_| failed("blog delete"))?;
+        if result.rows_affected() != 1 {
+            return Err(Error::BlogNotFound);
+        }
+        Ok(())
+    }
 }
 
 /// Unique violations map to stable conflict errors; anything else stays
@@ -287,6 +361,7 @@ fn insert_error(err: sqlx::Error, context: &'static str) -> Error {
     match columns {
         columns if columns.contains("blogs.slug") => Error::SlugTaken,
         columns if columns.contains("blogs.domain") => Error::DomainTaken,
+        columns if columns.contains("blog_appearance_variants") => Error::VariantNameTaken,
         _ => Error::Internal(InternalError::new(std::io::Error::other(format!(
             "{context}: {err}"
         )))),

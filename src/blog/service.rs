@@ -4,7 +4,7 @@ use uuid::Uuid;
 
 use crate::blog::appearance::{self as appearance_json, EmbedAppearance};
 use crate::blog::repo::BlogRepository;
-use crate::blog::BlogRow;
+use crate::blog::{AppearanceVariantRow, BlogRow};
 use crate::clock::Clock;
 use crate::error::Error;
 use crate::ids::{parse_uuid_v7, valid_slug};
@@ -15,6 +15,10 @@ pub const MAX_NAME_BYTES: usize = 128;
 /// exhaust storage through many small entities.
 pub const MAX_BLOGS_PER_USER: usize = 20;
 pub const MAX_ORIGINS_PER_BLOG: usize = 32;
+/// Named appearance variants per blog: reusable styling snapshots.
+pub const MAX_APPEARANCE_VARIANTS: usize = 50;
+/// Upper byte length for a variant name after trimming.
+pub const MAX_VARIANT_NAME_BYTES: usize = 64;
 
 /// Wire shape for create/list/update and origins responses.
 #[derive(Debug, Clone, serde::Serialize)]
@@ -36,6 +40,27 @@ pub struct BlogResponse {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OriginsResponse {
     pub origins: Vec<String>,
+}
+
+/// Wire shape for a named appearance variant; the stored document ships so
+/// clients can apply it without a second fetch.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AppearanceVariantResponse {
+    pub id: Uuid,
+    pub blog_id: Uuid,
+    pub name: String,
+    pub embed_appearance: EmbedAppearance,
+    pub created_at: i64,
+}
+
+/// Strict JSON request body for saving a named variant. Without a document,
+/// the blog's currently saved appearance is snapshotted.
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateVariantRequest {
+    pub name: String,
+    #[serde(default)]
+    pub embed_appearance: Option<serde_json::Value>,
 }
 
 /// Wire shape for the public delivery API: no owner IDs, no management data.
@@ -284,6 +309,112 @@ impl BlogService {
     pub async fn delete(&self, owner_id: Uuid, blog_id_param: &str) -> Result<(), Error> {
         let blog_id = parse_uuid_v7(blog_id_param)?;
         self.blogs.delete(&blog_id, &owner_id).await
+    }
+
+    /// Saves a named appearance variant: a reusable snapshot of styling that
+    /// never changes the live look. Without a document, the currently saved
+    /// appearance is snapshotted. Names are unique per blog.
+    pub async fn create_variant(
+        &self,
+        owner_id: Uuid,
+        blog_id_param: &str,
+        request: &CreateVariantRequest,
+    ) -> Result<AppearanceVariantResponse, Error> {
+        let blog_id = parse_uuid_v7(blog_id_param)?;
+        let blog = self
+            .blogs
+            .find_for_owner(&owner_id, &blog_id)
+            .await?
+            .ok_or(Error::BlogNotFound)?;
+        let name = request.name.trim();
+        if name.is_empty() || name.len() > MAX_VARIANT_NAME_BYTES {
+            return Err(Error::InvalidInput);
+        }
+        let count = self.blogs.count_variants(&blog_id).await?;
+        if count >= i64::try_from(MAX_APPEARANCE_VARIANTS).unwrap_or(i64::MAX) {
+            return Err(Error::Forbidden);
+        }
+        let mut appearance = match &request.embed_appearance {
+            Some(document) => {
+                let mut document = document.clone();
+                appearance_json::strip_default_sentinels(&mut document);
+                appearance_json::drop_empty_groups(&mut document);
+                serde_json::from_value::<EmbedAppearance>(document)
+                    .map_err(|_| Error::InvalidInput)?
+            }
+            None => blog
+                .embed_appearance
+                .as_deref()
+                .and_then(appearance_json::parse_saved)
+                .ok_or(Error::InvalidInput)?,
+        };
+        appearance.validate()?;
+        let now = self.clock.now();
+        let id = Uuid::now_v7();
+        let stored = appearance_json::to_json(&appearance)?;
+        self.blogs
+            .insert_variant(&id, &blog_id, name, &stored, now)
+            .await?;
+        Ok(AppearanceVariantResponse {
+            id,
+            blog_id,
+            name: name.to_owned(),
+            embed_appearance: appearance,
+            created_at: now,
+        })
+    }
+
+    /// Lists the blog's named variants, newest first.
+    pub async fn list_variants(
+        &self,
+        owner_id: Uuid,
+        blog_id_param: &str,
+    ) -> Result<Vec<AppearanceVariantResponse>, Error> {
+        let blog_id = parse_uuid_v7(blog_id_param)?;
+        self.blogs
+            .find_for_owner(&owner_id, &blog_id)
+            .await?
+            .ok_or(Error::BlogNotFound)?;
+        let rows = self.blogs.list_variants(&blog_id).await?;
+        rows.into_iter()
+            .map(|row| self.variant_response(row))
+            .collect()
+    }
+
+    /// Deletes one named variant; unknown and foreign ids read as 404.
+    pub async fn delete_variant(
+        &self,
+        owner_id: Uuid,
+        blog_id_param: &str,
+        variant_id_param: &str,
+    ) -> Result<(), Error> {
+        let blog_id = parse_uuid_v7(blog_id_param)?;
+        self.blogs
+            .find_for_owner(&owner_id, &blog_id)
+            .await?
+            .ok_or(Error::BlogNotFound)?;
+        let variant_id = parse_uuid_v7(variant_id_param)?;
+        let deleted = self.blogs.delete_variant(&variant_id, &blog_id).await?;
+        if !deleted {
+            return Err(Error::BlogNotFound);
+        }
+        Ok(())
+    }
+
+    fn variant_response(
+        &self,
+        row: AppearanceVariantRow,
+    ) -> Result<AppearanceVariantResponse, Error> {
+        Ok(AppearanceVariantResponse {
+            id: row.id,
+            blog_id: row.blog_id,
+            name: row.name,
+            // Stored documents were validated at write time; a corrupted row
+            // reads as a 404-style miss instead of leaking bad data.
+            embed_appearance: appearance_json::parse_saved(&row.appearance)
+                .ok_or(Error::BlogNotFound)?,
+            created_at: row.created_at,
+        })
     }
 
     /// Replaces the whole origin list with normalized values; the blog must

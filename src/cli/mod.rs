@@ -138,6 +138,29 @@ pub enum AppearanceCommand {
         #[arg(long)]
         yes: bool,
     },
+    /// Save the current styling under a name for later reuse.
+    Save {
+        /// Name of the saved style.
+        name: String,
+        /// Save this appearance document instead of the current styling.
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
+    /// List saved styles.
+    List,
+    /// Apply a saved style to the blog.
+    Apply {
+        /// Name or id of the saved style.
+        target: String,
+    },
+    /// Delete a saved style (confirmation unless --yes).
+    Delete {
+        /// Name or id of the saved style.
+        target: String,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -299,6 +322,22 @@ impl Authed {
         }
         Err(CliError::usage(format!("no post '{target}' in this blog")))
     }
+}
+
+/// Resolves a saved style by name (case-insensitive) or id.
+fn resolve_variant(
+    variants: &[client::AppearanceVariant],
+    target: &str,
+) -> Result<client::AppearanceVariant, CliError> {
+    variants
+        .iter()
+        .find(|variant| variant.name.eq_ignore_ascii_case(target) || variant.id == target)
+        .cloned()
+        .ok_or_else(|| {
+            CliError::usage(format!(
+                "no style '{target}'; run `stscli blog appearance list`"
+            ))
+        })
 }
 
 /// Parses a canonical UUID, trimmed; anything else is meant as a slug.
@@ -470,6 +509,101 @@ async fn blog_command(shared: &Shared, command: BlogCommand) -> Result<(), CliEr
                         .set_appearance(&authed.pat, &blog_id, None)
                         .await?;
                     return print_json(&blog.embed_appearance);
+                }
+                AppearanceCommand::Save { name, file } => {
+                    let name = name.trim();
+                    if name.is_empty() {
+                        return Err(CliError::usage("style name is required"));
+                    }
+                    let document = match file {
+                        Some(path) => {
+                            let raw = std::fs::read_to_string(path).map_err(CliError::Io)?;
+                            Some(serde_json::from_str::<serde_json::Value>(&raw)
+                                .map_err(|_| {
+                                    CliError::usage(
+                                        "invalid appearance JSON: expected a versioned appearance document",
+                                    )
+                                })?)
+                        }
+                        None => None, // The server snapshots the current styling.
+                    };
+                    let variant = authed
+                        .api
+                        .create_variant(&authed.pat, &blog_id, name, document.as_ref())
+                        .await?;
+                    if authed.json {
+                        return print_json(&variant);
+                    }
+                    println!("Style '{}' saved.", variant.name);
+                }
+                AppearanceCommand::List => {
+                    let variants = authed.api.variants(&authed.pat, &blog_id).await?;
+                    if authed.json {
+                        return print_json(&variants);
+                    }
+                    if variants.is_empty() {
+                        println!(
+                            "No saved styles yet. Save one: `stscli blog appearance save <name>`"
+                        );
+                        return Ok(());
+                    }
+                    let rows: Vec<Vec<String>> = variants
+                        .iter()
+                        .map(|variant| vec![variant.name.clone(), variant.id.clone()])
+                        .collect();
+                    print!("{}", output::table(&["name", "id"], &rows));
+                }
+                AppearanceCommand::Apply { target } => {
+                    let variants = authed.api.variants(&authed.pat, &blog_id).await?;
+                    let variant = resolve_variant(&variants, &target)?;
+                    let appearance = variant.appearance.clone().ok_or_else(|| {
+                        CliError::usage(format!("style '{}' has no document", variant.name))
+                    })?;
+                    let mut document = appearance;
+                    crate::blog::appearance::strip_default_sentinels(&mut document);
+                    crate::blog::appearance::drop_empty_groups(&mut document);
+                    let mut appearance: crate::blog::appearance::EmbedAppearance =
+                        serde_json::from_value(document).map_err(|_| {
+                            CliError::usage("saved style is not a valid appearance document")
+                        })?;
+                    appearance.validate().map_err(|_| {
+                        CliError::usage("saved style is not a valid appearance document")
+                    })?;
+                    let blog = authed
+                        .api
+                        .set_appearance(&authed.pat, &blog_id, Some(&appearance))
+                        .await?;
+                    if authed.json {
+                        return print_json(&blog.embed_appearance);
+                    }
+                    println!("Style '{}' applied.", variant.name);
+                }
+                AppearanceCommand::Delete { target, yes } => {
+                    let variants = authed.api.variants(&authed.pat, &blog_id).await?;
+                    let variant = resolve_variant(&variants, &target)?;
+                    if !yes {
+                        if !std::io::stdin().is_terminal() {
+                            return Err(CliError::usage(
+                                "deletion requires --yes outside an interactive terminal",
+                            ));
+                        }
+                        if !prompt(&format!(
+                            "Delete style '{}' permanently? Type 'yes' to confirm: ",
+                            variant.name
+                        ))?
+                        .eq_ignore_ascii_case("yes")
+                        {
+                            return Ok(());
+                        }
+                    }
+                    authed
+                        .api
+                        .delete_variant(&authed.pat, &blog_id, &variant.id)
+                        .await?;
+                    if authed.json {
+                        return print_json(&variant);
+                    }
+                    println!("Style '{}' deleted.", variant.name);
                 }
             }
         }
@@ -1094,6 +1228,7 @@ mod tests {
             ));
         }
         assert!(Cli::try_parse_from(["stscli", "blog", "appearance", "set"]).is_err());
+        assert!(Cli::try_parse_from(["stscli", "blog", "appearance", "save"]).is_err());
     }
 
     #[test]

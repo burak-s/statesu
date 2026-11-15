@@ -26,6 +26,8 @@ pub enum Error {
     TurnstileFailed,
     SlugTaken,
     DomainTaken,
+    /// An appearance variant with this name already exists for the blog.
+    VariantNameTaken,
     /// A storage connection failed verification or references bad fields;
     /// the user can correct their bucket setup and retry.
     ConnectionInvalid,
@@ -110,6 +112,7 @@ impl Error {
             Error::EmailNotVerified => "email not verified",
             Error::TurnstileFailed => "turnstile verification failed",
             Error::SlugTaken => "slug already in use",
+            Error::VariantNameTaken => "style name already in use",
             Error::DomainTaken => "domain already claimed",
             Error::ConnectionInvalid => "storage connection invalid",
             Error::ConnectionInUse => "storage connection in use",
@@ -132,9 +135,10 @@ impl Error {
             | Error::InvalidPassword
             | Error::InvalidInput
             | Error::ConnectionInvalid => StatusCode::BAD_REQUEST,
-            Error::UserAlreadyExists | Error::SlugTaken | Error::DomainTaken => {
-                StatusCode::CONFLICT
-            }
+            Error::UserAlreadyExists
+            | Error::SlugTaken
+            | Error::DomainTaken
+            | Error::VariantNameTaken => StatusCode::CONFLICT,
             Error::ConnectionInUse | Error::RetrySnapshot => StatusCode::CONFLICT,
             Error::InvalidCredentials
             | Error::MissingToken

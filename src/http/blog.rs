@@ -3,8 +3,8 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 
 use crate::blog::service::{
-    BlogResponse, CreateBlogRequest, OriginsResponse, ReplaceAppearanceRequest,
-    ReplaceOriginsRequest, UpdateBlogRequest,
+    AppearanceVariantResponse, BlogResponse, CreateBlogRequest, CreateVariantRequest,
+    OriginsResponse, ReplaceAppearanceRequest, ReplaceOriginsRequest, UpdateBlogRequest,
 };
 use crate::error::Error;
 use crate::http::AppState;
@@ -61,6 +61,38 @@ pub async fn set_appearance(
     Ok(Json(
         state.blogs.set_appearance(user.id, &blog_id, &body).await?,
     ))
+}
+
+pub async fn list_variants(
+    State(state): State<AppState>,
+    session: AuthedUser,
+    Path(blog_id): Path<String>,
+) -> Result<Json<Vec<AppearanceVariantResponse>>, Error> {
+    Ok(Json(
+        state.blogs.list_variants(session.user.id, &blog_id).await?,
+    ))
+}
+
+pub async fn create_variant(
+    State(state): State<AppState>,
+    AuthedWriter(user): AuthedWriter,
+    Path(blog_id): Path<String>,
+    StrictJson(body): StrictJson<CreateVariantRequest>,
+) -> Result<(StatusCode, Json<AppearanceVariantResponse>), Error> {
+    let created = state.blogs.create_variant(user.id, &blog_id, &body).await?;
+    Ok((StatusCode::CREATED, Json(created)))
+}
+
+pub async fn delete_variant(
+    State(state): State<AppState>,
+    AuthedWriter(user): AuthedWriter,
+    Path((blog_id, variant_id)): Path<(String, String)>,
+) -> Result<StatusCode, Error> {
+    state
+        .blogs
+        .delete_variant(user.id, &blog_id, &variant_id)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn set_origins(

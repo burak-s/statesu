@@ -728,6 +728,20 @@ pub async fn authed(app: &TestApp, method: Method, path: &str, token: &str) -> T
     app.send(Request::from_parts(parts, body)).await
 }
 
+/// `authed` with a JSON body: POST/PATCH helpers share this path.
+pub async fn authed_json(
+    app: &TestApp,
+    method: Method,
+    path: &str,
+    token: &str,
+    body: Value,
+) -> TestResponse {
+    let request = json_request(method, path, body);
+    let (mut parts, body) = request.into_parts();
+    parts.headers.insert("authorization", bearer(token));
+    app.send(Request::from_parts(parts, body)).await
+}
+
 pub fn test_config(db_path: std::path::PathBuf) -> Config {
     Config {
         addr: "127.0.0.1:0".to_owned(),

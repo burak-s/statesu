@@ -48,6 +48,17 @@ pub struct Post {
     pub published_at: Option<i64>,
 }
 
+/// Named styling variant as the server reports it; `appearance` carries the
+/// full saved document for `apply`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppearanceVariant {
+    pub id: String,
+    pub blog_id: String,
+    pub name: String,
+    #[serde(default, rename = "embed_appearance")]
+    pub appearance: Option<serde_json::Value>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Paged<T> {
     pub items: Vec<T>,
@@ -203,6 +214,61 @@ impl Api {
                 Some(pat),
             )
             .json(&serde_json::json!({ "embed_appearance": appearance }))
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn create_variant(
+        &self,
+        pat: &str,
+        blog_id: &str,
+        name: &str,
+        appearance: Option<&serde_json::Value>,
+    ) -> Result<AppearanceVariant, CliError> {
+        self.json_ok(
+            self.request(
+                reqwest::Method::POST,
+                &format!("/blogs/{blog_id}/appearance/variants"),
+                Some(pat),
+            )
+            .json(&serde_json::json!({ "name": name, "embed_appearance": appearance }))
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn variants(
+        &self,
+        pat: &str,
+        blog_id: &str,
+    ) -> Result<Vec<AppearanceVariant>, CliError> {
+        self.json_ok(
+            self.request(
+                reqwest::Method::GET,
+                &format!("/blogs/{blog_id}/appearance/variants"),
+                Some(pat),
+            )
+            .send()
+            .await?,
+        )
+        .await
+    }
+
+    pub async fn delete_variant(
+        &self,
+        pat: &str,
+        blog_id: &str,
+        variant_id: &str,
+    ) -> Result<(), CliError> {
+        self.unit_ok(
+            self.request(
+                reqwest::Method::DELETE,
+                &format!("/blogs/{blog_id}/appearance/variants/{variant_id}"),
+                Some(pat),
+            )
             .send()
             .await?,
         )

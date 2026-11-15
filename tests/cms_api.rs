@@ -502,6 +502,181 @@ async fn embed_appearance_is_saved_cleared_and_owner_scoped() {
     assert_eq!(blog["embed_appearance"]["version"], 1);
 }
 
+/// Named appearance variants: snapshot the current look or an explicit
+/// document, list newest first, apply, delete; names are unique per blog and
+/// ownership is enforced without leaking other accounts' variants.
+#[tokio::test]
+async fn appearance_variants_are_named_snapshots_applied_and_owner_scoped() {
+    let app = TestApp::new().await;
+    let token = register_token(&app, common::EMAIL, common::PASSWORD).await;
+    let id = create_blog(&app, &token, "Styles", "styles").await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Snapshot without a document: nothing is saved yet, so it is rejected.
+    app.send(authed_json(
+        Method::POST,
+        &format!("/blogs/{id}/appearance/variants"),
+        &token,
+        json!({ "name": "First" }),
+    ))
+    .await
+    .assert_error(StatusCode::BAD_REQUEST, "invalid input");
+
+    // Save the current look under a name after styling the blog.
+    set_appearance(
+        &app,
+        &token,
+        &id,
+        json!({ "embed_appearance": { "version": 1, "colors": { "link": "#123456" } } }),
+    )
+    .await;
+    let first = app
+        .send(authed_json(
+            Method::POST,
+            &format!("/blogs/{id}/appearance/variants"),
+            &token,
+            json!({ "name": " Brand look " }),
+        ))
+        .await;
+    assert_eq!(first.status, StatusCode::CREATED, "{}", first.text());
+    assert_eq!(first.json()["name"], "Brand look");
+    assert_eq!(
+        first.json()["embed_appearance"]["colors"]["link"],
+        "#123456"
+    );
+    let first_id = first.json()["id"].as_str().unwrap().to_owned();
+
+    // An explicit document snapshots that document instead; keyword
+    // defaults are stripped like every appearance write.
+    let second = app
+        .send(authed_json(
+            Method::POST,
+            &format!("/blogs/{id}/appearance/variants"),
+            &token,
+            json!({ "name": "Cozy", "embed_appearance": { "version": 1, "typography": { "body_size": "revert" }, "layout": { "padding": 24 } } }),
+        ))
+        .await;
+    assert_eq!(second.status, StatusCode::CREATED, "{}", second.text());
+    assert_eq!(
+        second.json()["embed_appearance"],
+        json!({ "version": 1, "layout": { "padding": 24 } })
+    );
+
+    // Duplicate names conflict; empty and oversized names are invalid.
+    for (body, status, message) in [
+        (
+            json!({ "name": "cozy" }),
+            StatusCode::CONFLICT,
+            "style name already in use",
+        ),
+        (
+            json!({ "name": "  " }),
+            StatusCode::BAD_REQUEST,
+            "invalid input",
+        ),
+        (
+            json!({ "name": "x".repeat(65) }),
+            StatusCode::BAD_REQUEST,
+            "invalid input",
+        ),
+    ] {
+        app.send(authed_json(
+            Method::POST,
+            &format!("/blogs/{id}/appearance/variants"),
+            &token,
+            body,
+        ))
+        .await
+        .assert_error(status, message);
+    }
+
+    // Listing is newest first and carries the documents.
+    let listed = common::authed(
+        &app,
+        Method::GET,
+        &format!("/blogs/{id}/appearance/variants"),
+        &token,
+    )
+    .await;
+    assert_eq!(listed.json().as_array().unwrap().len(), 2);
+    assert_eq!(listed.json()[0]["name"], "Cozy");
+    assert_eq!(listed.json()[1]["id"], first_id);
+
+    // Applying a snapshot replaces the live appearance (keyword defaults
+    // included in the stored doc keep their stripped shape).
+    let applied = set_appearance(
+        &app,
+        &token,
+        &id,
+        json!({ "embed_appearance": listed.json()[0]["embed_appearance"].clone() }),
+    )
+    .await;
+    assert_eq!(
+        applied.json()["embed_appearance"],
+        json!({ "version": 1, "layout": { "padding": 24 } })
+    );
+
+    // Ownership: another account sees no variants and cannot mutate them.
+    let other = register_token(&app, "variants-other@example.com", common::PASSWORD).await;
+    let other_id = create_blog(&app, &other, "Other", "other").await.json()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    common::authed(
+        &app,
+        Method::GET,
+        &format!("/blogs/{other_id}/appearance/variants"),
+        &other,
+    )
+    .await
+    .status_check(StatusCode::OK);
+    common::authed(
+        &app,
+        Method::GET,
+        &format!("/blogs/{id}/appearance/variants"),
+        &other,
+    )
+    .await
+    .assert_error(StatusCode::NOT_FOUND, "blog not found");
+    common::authed(
+        &app,
+        Method::DELETE,
+        &format!("/blogs/{other_id}/appearance/variants/{first_id}"),
+        &other,
+    )
+    .await
+    .assert_error(StatusCode::NOT_FOUND, "blog not found");
+
+    // Deleting removes exactly one variant; unknown ids read as 404.
+    let deleted = common::authed(
+        &app,
+        Method::DELETE,
+        &format!("/blogs/{id}/appearance/variants/{first_id}"),
+        &token,
+    )
+    .await;
+    assert_eq!(deleted.status, StatusCode::NO_CONTENT, "{}", deleted.text());
+    common::authed(
+        &app,
+        Method::DELETE,
+        &format!("/blogs/{id}/appearance/variants/{first_id}"),
+        &token,
+    )
+    .await
+    .assert_error(StatusCode::NOT_FOUND, "blog not found");
+    let listed = common::authed(
+        &app,
+        Method::GET,
+        &format!("/blogs/{id}/appearance/variants"),
+        &token,
+    )
+    .await;
+    assert_eq!(listed.json().as_array().unwrap().len(), 1);
+    assert_eq!(listed.json()[0]["name"], "Cozy");
+}
+
 /// Cross-checks the management endpoint against the Rust validator for every
 /// numeric token at both bounds and just outside them, plus wrong wire types,
 /// so a frontend edit cannot drift past the backend undetected.
