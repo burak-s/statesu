@@ -1,0 +1,18 @@
+# Statesu
+
+> Statesu is an open-source Markdown CMS for adding a blog to an existing website. Write from the dashboard or CLI; display posts with a JavaScript embed or render them as HTML on your own domain using the public API.
+
+The embed renders posts in the browser. For HTML with post content and metadata in the initial response, use server-side rendering or static export. Public API reads do not require a token; authoring and management do.
+
+## Documentation
+
+- [Web integration guide](https://statesu.com/docs/integration): Add the embed, configure allowed origins, or serve HTML on your own domain.
+- [Static export walkthrough](https://statesu.com/docs/integration#static-export): Publish Markdown posts as HTML files alongside an existing site.
+- [CLI guide](https://statesu.com/docs/cli): Install `stscli`, connect an account, and publish Markdown from the terminal.
+- [API reference](https://statesu.com/docs/api): Manage blogs and posts, or read published content as JSON.
+
+## Examples and source
+
+- [Demo blog](https://statesu.com/demo/blog/): Example of a static HTML blog that works without JavaScript.
+- [Blog renderer source](https://github.com/burak-s/statesu/blob/HEAD/web/examples/customer-blog.js): Reference implementation for server-side rendering and static export.
+- [Source repository](https://github.com/burak-s/statesu): Code, license, and self-hosting instructions.

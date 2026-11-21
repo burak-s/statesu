@@ -94,6 +94,59 @@ async fn docs_static_contract_keeps_cache_security_and_404_semantics() {
 }
 
 #[tokio::test]
+async fn static_page_aliases_redirect_without_indexing_account_flows() {
+    let app = TestApp::new().await;
+
+    for (method, alias, canonical) in [
+        (Method::GET, "/index.html?ref=docs", "/?ref=docs"),
+        (Method::GET, "/docs/integration/", "/docs/integration"),
+        (Method::HEAD, "/docs/integration.html", "/docs/integration"),
+        (Method::GET, "/verify/?token=a%2Bb", "/verify?token=a%2Bb"),
+        (Method::GET, "/demo/blog", "/demo/blog/"),
+        (Method::GET, "/demo/blog/index.html", "/demo/blog/"),
+        (Method::GET, "/demo/blog/index", "/demo/blog/index/"),
+    ] {
+        let response = app.send(empty(method, alias)).await;
+        assert_eq!(response.status, StatusCode::PERMANENT_REDIRECT, "{alias}");
+        assert_eq!(response.header("location"), Some(canonical));
+        assert!(response.body.is_empty());
+    }
+
+    for path in [
+        "/missing/",
+        "/missing.html",
+        "/favicon.svg/",
+        "/demo/blog/missing/",
+    ] {
+        app.send(empty(Method::GET, path))
+            .await
+            .status_check(StatusCode::NOT_FOUND);
+    }
+
+    for (path, robots) in [
+        ("/", None),
+        ("/docs/integration", None),
+        ("/demo/blog/", None),
+        ("/demo/blog/index/", None),
+        ("/dashboard", Some("noindex")),
+        ("/verify", Some("noindex")),
+        ("/cli/authorize", Some("noindex, nofollow")),
+    ] {
+        let response = app.send(empty(Method::HEAD, path)).await;
+        assert_eq!(response.status, StatusCode::OK, "{path}");
+        assert_eq!(response.header("x-robots-tag"), robots, "{path}");
+    }
+
+    let llms = app.send(empty(Method::GET, "/llms.txt")).await;
+    assert_eq!(llms.status, StatusCode::OK);
+    assert_eq!(
+        llms.header("content-type"),
+        Some("text/plain; charset=utf-8")
+    );
+    assert!(llms.text().starts_with("# Statesu\n"));
+}
+
+#[tokio::test]
 async fn public_delivery_never_allows_unknown_origins_or_credentials() {
     let app = TestApp::new().await;
     let request = with_header(

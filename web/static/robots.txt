@@ -1,8 +1,10 @@
 User-agent: *
 Allow: /
 
-# API responses are not documentation pages.
+# Account and blog management endpoints are not documentation pages.
 Disallow: /auth/
-Disallow: /state
+Disallow: /blogs$
+Disallow: /blogs/
 
 Sitemap: https://statesu.com/sitemap.xml
+Sitemap: https://statesu.com/demo/blog/sitemap.xml

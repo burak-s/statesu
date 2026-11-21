@@ -9,6 +9,7 @@ RUN npm ci
 COPY web/ ./
 ARG PUBLIC_TURNSTILE_SITE_KEY=""
 ENV PUBLIC_TURNSTILE_SITE_KEY=${PUBLIC_TURNSTILE_SITE_KEY}
+ARG STATESU_DEMO_BLOG=""
 RUN npm run build
 
 # --- Static musl backend build ---------------------------------------------

@@ -1,4 +1,5 @@
 <script>
+	import Seo from '#lib/components/Seo.svelte';
 	import Terminal from '#lib/components/Terminal.svelte';
 
 	const overrides = `/* The website always wins over the saved appearance. */
@@ -20,17 +21,18 @@
 }`;
 </script>
 
-<svelte:head>
-	<title>Web integration — Statesu</title>
-	<meta name="description" content="Display Statesu posts on your website with an embed script or public JSON. Configure hosting, CORS and safe Markdown rendering." />
-	<link rel="canonical" href="https://statesu.com/docs/integration" />
-</svelte:head>
+<Seo
+	title="How to Add a Blog to an Existing Website"
+	description="Keep your existing site and add a Markdown blog under /blog/. Follow a working HTML export example, or use a JavaScript embed for a quick setup."
+	path="/docs/integration"
+	type="article"
+/>
 
 <section class="intro">
 	<p class="eyebrow">Web integration</p>
-	<h1>Your posts.<br />Your frontend.</h1>
-	<p class="lead">Use one embed script to display posts, or fetch public JSON and render it yourself. No token belongs in your website code.</p>
-	<p>Want search engines to find posts on your own domain? See <a href="#search">SEO for posts on your own domain</a>.</p>
+	<h1>How to add a blog to your existing website</h1>
+	<p class="lead">Keep your homepage and host. Publish Markdown in Statesu, then put your posts under <code>/blog/</code> on your domain.</p>
+	<p>Have a plain HTML site and want readable post links without JavaScript? <a href="#static-export">Follow the static export walkthrough</a> or open the <a href="/demo/blog/" rel="external">working demo blog</a>. For a quick embed, start below.</p>
 </section>
 
 <section>
@@ -107,9 +109,16 @@
 	<h3>Keep existing root-level post URLs</h3>
 	<Terminal code={'node examples/customer-blog.js --site https://example.com --blog writing-desk \\\n  --base-path / --index-path /blog --exclude-slug about --exclude-slug announced'} language="text" />
 	<p><code>--base-path /</code> keeps posts at URLs like <code>/hello-world</code>, while <code>--index-path /blog</code> puts the list and sitemap under <code>/blog</code> and leaves the homepage alone. Route your existing pages and assets before your post routes. Repeat <code>--exclude-slug</code> for existing one-segment routes that would otherwise conflict; excluded posts appear in neither the list nor the sitemap or export. Without <code>--index-path</code>, the blog index stays at the base path.</p>
-	<h3>Static export</h3>
-	<Terminal code={'# Use a fresh output directory on each build.\nnode examples/customer-blog.js --site https://example.com --blog writing-desk --export blog-output'} language="text" />
-	<p>Deploy the contents of <code>blog-output/</code> alongside your site. The example writes directory indexes such as <code>blog/hello-world/index.html</code> and uses <code>/blog/hello-world/</code> as the canonical URL. Configure your host to serve directory indexes and redirect the old slashless URLs if it does not already. Remove the old rewrite so missing files return a real <code>404</code>. With the root-level options above, export writes <code>blog/index.html</code> for the list and does not generate a homepage. Regenerate and replace the previous blog output on every publish, edit, unpublish or deletion; otherwise old pages may still be live.</p>
+	<h3 id="static-export">Add a blog to a plain HTML site with static export</h3>
+	<p>Start with a site that already serves <code>index.html</code>. We'll add a blog index and a post at <code>/blog/hello-world/</code> without changing that homepage.</p>
+	<ol>
+		<li>In the <a href="/dashboard">Statesu dashboard</a>, create a blog with an available slug and publish a Markdown post with the slug <code>hello-world</code>. Replace <code>writing-desk</code> below with your blog's slug.</li>
+		<li>With Git and Node.js 24 installed, run the commands below. Replace <code>https://example.com</code> with your public website origin. The export reads published posts without an API token or browser CORS setup.</li>
+		<li>Copy <code>blog-output/blog/</code> into your site's publish directory next to its existing <code>index.html</code>. Add a normal <code>&lt;a href="/blog/"&gt;Blog&lt;/a&gt;</code> link to your homepage and deploy.</li>
+	</ol>
+	<Terminal code={'git clone https://github.com/burak-s/statesu.git\ncd statesu/web\nnpm ci\n# Use a fresh output directory on each build.\nnode examples/customer-blog.js --site https://example.com --blog writing-desk --export blog-output'} language="text" />
+	<p>Your post lives at <code>blog/hello-world/index.html</code> on disk and <code>/blog/hello-world/</code> on the web. The export also writes <code>blog/index.html</code> and <code>blog/sitemap.xml</code>. Make sure your host serves directory indexes, redirects the old slashless URLs, and returns a real <code>404</code> for missing posts rather than rewriting them to a template.</p>
+	<p>After deploy, open your post with JavaScript disabled or check its raw response. Compare it to <a href="/demo/blog/" rel="external">the demo blog</a>, which uses the same exporter. Submit <code>https://example.com/blog/sitemap.xml</code> for your domain, and regenerate and replace the old blog files on every publish, edit, unpublish or deletion so removed posts don't stay live.</p>
 	<p>Both setups keep the embed available for other pages, such as homepage announcements. The generated blog HTML uses your site's template and CSS if you integrate it into your server or adapt the example; it does not automatically apply the embed's saved appearance.</p>
 </section>
 

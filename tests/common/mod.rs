@@ -778,13 +778,23 @@ pub struct TestAssets {
 impl TestAssets {
     pub fn standard() -> TestAssets {
         let mut files = HashMap::new();
-        files.insert(
+        for path in [
             "index.html",
-            (
-                b"<!doctype html><html><body>docs</body></html>".as_slice(),
-                "text/html; charset=utf-8",
-            ),
-        );
+            "docs/integration.html",
+            "dashboard.html",
+            "verify.html",
+            "cli/authorize.html",
+            "demo/blog/index.html",
+            "demo/blog/index/index.html",
+        ] {
+            files.insert(
+                path,
+                (
+                    b"<!doctype html><html><body>docs</body></html>".as_slice(),
+                    "text/html; charset=utf-8",
+                ),
+            );
+        }
         files.insert(
             "_app/immutable/app.js",
             (
@@ -808,6 +818,13 @@ impl TestAssets {
             (
                 b"/* Statesu embed v2 */".as_slice(),
                 "text/javascript; charset=utf-8",
+            ),
+        );
+        files.insert(
+            "llms.txt",
+            (
+                include_bytes!("../../web/static/llms.txt").as_slice(),
+                "text/plain; charset=utf-8",
             ),
         );
         TestAssets { files }

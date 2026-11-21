@@ -1,6 +1,7 @@
 import adapter from '@sveltejs/adapter-static';
 import { sveltekit } from '@sveltejs/kit/vite';
 import { loadEnv, defineConfig } from 'vite';
+import { demoBlogDev } from './examples/build-demo-blog.js';
 
 // Proxy API requests during local documentation development.
 const apiTarget = process.env.STATESU_API ?? 'http://localhost:8080';
@@ -15,6 +16,7 @@ const turnstileSiteKey = (mode) =>
 
 export default defineConfig(({ mode }) => ({
 	plugins: [
+		demoBlogDev(),
 		sveltekit({
 			compilerOptions: {
 				// Force runes mode for the project, except for libraries. Can be removed in svelte 6.

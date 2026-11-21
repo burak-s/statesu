@@ -5,12 +5,13 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "npm run build:sveltekit && npm run build:embed && npm run build:embed:v2",
+		"build": "npm run build:sveltekit && npm run build:embed && npm run build:embed:v2 && npm run build:demo",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"build:sveltekit": "vite build",
 		"build:embed": "vite build --config vite.embed.config.js",
 		"build:embed:v2": "vite build --config vite.embed-v2.config.js",
+		"build:demo": "node examples/build-demo-blog.js",
 		"test": "node --test tests/*.test.js",
 		"test:browser": "playwright test",
 		"test:browser:headed": "playwright test --headed"

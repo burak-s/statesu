@@ -1,24 +1,36 @@
+<script>
+	import Seo from '#lib/components/Seo.svelte';
+</script>
+
+<Seo
+	title="Add a Markdown Blog to Your Website"
+	description="Add a Markdown blog to your existing website without rebuilding it. Publish from your terminal or dashboard, then display posts with an embed or API."
+	path="/"
+/>
+
 <svelte:head>
-	<title>Statesu — a blog for your existing website</title>
-	<meta name="description" content="A blog for your website, without rebuilding your website. Write in Markdown. Publish through an embed or API. Keep your existing site." />
-	<link rel="canonical" href="https://statesu.com/" />
-	<meta property="og:title" content="Statesu — a blog for your existing website" />
-	<meta property="og:description" content="Write in Markdown. Publish through an embed or API. Keep your existing site." />
-	<meta property="og:type" content="website" />
-	<meta property="og:url" content="https://statesu.com/" />
-	<meta name="twitter:card" content="summary" />
-	<meta name="twitter:title" content="Statesu — a blog for your existing website" />
-	<meta name="twitter:description" content="Write in Markdown. Publish through an embed or API. Keep your existing site." />
 	<script type="application/ld+json">
 		{
 			"@context": "https://schema.org",
-			"@type": "SoftwareApplication",
-			"name": "Statesu",
-			"url": "https://statesu.com/",
-			"description": "A blog for your website, without rebuilding your website. Write in Markdown. Publish through an embed or API. Keep your existing site.",
-			"applicationCategory": "DeveloperApplication",
-			"operatingSystem": "Web",
-			"sameAs": "https://github.com/burak-s/statesu"
+			"@graph": [
+				{
+					"@type": "WebSite",
+					"@id": "https://statesu.com/#website",
+					"name": "Statesu",
+					"url": "https://statesu.com/",
+					"inLanguage": "en"
+				},
+				{
+					"@type": "SoftwareApplication",
+					"@id": "https://statesu.com/#application",
+					"name": "Statesu",
+					"url": "https://statesu.com/",
+					"description": "Publish Markdown from a dashboard or CLI and add a blog to your existing website with an embed or API.",
+					"applicationCategory": "DeveloperApplication",
+					"operatingSystem": "Web",
+					"sameAs": "https://github.com/burak-s/statesu"
+				}
+			]
 		}
 	</script>
 </svelte:head>
@@ -37,8 +49,8 @@
 <main>
 	<section class="intro">
 		<p class="eyebrow">Your words. Your website.</p>
-		<h1>A blog for your website,<br />without rebuilding your website.</h1>
-		<p class="lead">Write in Markdown. Publish through an embed or API. Keep your existing site.</p>
+		<h1>Add a Markdown blog<br />to your existing website.</h1>
+		<p class="lead">Write in the dashboard or your terminal. Use an embed or the API to display posts without rebuilding your site.</p>
 		<p><a href="/dashboard">Open dashboard →</a></p>
 	</section>
 
@@ -55,6 +67,12 @@
 			<h2>Build with the API <span aria-hidden="true">↗</span></h2>
 			<p>Fetch posts for your own frontend, or connect your publishing tools and automation.</p>
 		</a>
+	</section>
+
+	<section>
+		<h2>Publish on your own domain</h2>
+		<p>Use the JavaScript embed for a quick setup. If your posts should show up in search and link previews, <a href="/docs/integration#search">serve each post as HTML with server-side rendering or static export</a>. See what that looks like in the <a href="/demo/blog/" rel="external">static HTML demo blog</a>. Either way, readers stay on your website.</p>
+		<p>Use the hosted dashboard or <a href="https://github.com/burak-s/statesu#docker">self-host the open-source CMS</a> with a Rust binary and SQLite.</p>
 	</section>
 </main>
 

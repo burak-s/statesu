@@ -67,16 +67,20 @@ have those system libraries. Failures retain traces and screenshots under
 
 ## Search engine metadata
 
-The prerendered homepage includes a single title and description, a canonical URL,
-Open Graph and Twitter metadata, and JSON-LD describing the API documentation.
-`static/robots.txt` allows documentation crawling and excludes API routes;
-`static/sitemap.xml` lists the homepage, the site's only documentation page.
-Crawler exclusions are not access controls: states remain public.
+The homepage and public guides are prerendered with canonical URLs and social
+metadata. `static/sitemap.xml` lists those pages; `static/robots.txt` also
+advertises the generated demo sitemap at `/demo/blog/sitemap.xml`.
+`static/llms.txt` points to public guides and source code.
 
-The production URL is `https://statesu.com/`. If the domain changes, update the
-canonical URL in `src/routes/+page.svelte` and the URLs in both crawler files.
-Add new documentation pages to the sitemap when they are introduced. After
-deployment, submit `https://statesu.com/sitemap.xml` in Google Search Console.
+`npm run build` exports `/demo/blog/` as standalone HTML using
+`examples/customer-blog.js` and bundled sample API data. To export a real demo
+instead, set `STATESU_DEMO_BLOG` to the slug of a published blog on `statesu.com`
+(the production deploy reads it from the GitHub Actions environment variables).
+The blog's public posts are fetched at build time without credentials. Rebuild
+without a cached build step and redeploy to reflect changes to live posts.
+
+After deployment, submit `https://statesu.com/sitemap.xml` and
+`https://statesu.com/demo/blog/sitemap.xml` in Google Search Console.
 
 ## Layout
 

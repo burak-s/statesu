@@ -1,4 +1,5 @@
 <script>
+	import Seo from '#lib/components/Seo.svelte';
 	import Terminal from '#lib/components/Terminal.svelte';
 
 	const endpoints = [
@@ -41,15 +42,16 @@ curl --fail-with-body -sS "$API/blogs/BLOG_ID/media" \
   --data-binary @photo.webp`;
 </script>
 
-<svelte:head>
-	<title>API guide — Statesu</title>
-	<meta name="description" content="Authenticate with Statesu tokens, manage blogs and posts over HTTP, and read published content as public JSON." />
-	<link rel="canonical" href="https://statesu.com/docs/api" />
-</svelte:head>
+<Seo
+	title="Markdown Blog API Reference"
+	description="Create blogs and publish Markdown over HTTP. Use the Statesu API reference to authenticate, manage posts, and fetch published content as public JSON."
+	path="/docs/api"
+	type="article"
+/>
 
 <section class="intro">
 	<p class="eyebrow">API guide</p>
-	<h1>Build your own workflow.</h1>
+	<h1>Markdown blog API reference</h1>
 	<p class="lead">Manage content over HTTP, or read published posts as public JSON. For ready-made terminal commands, use the <a href="/docs/cli">CLI</a>.</p>
 </section>
 

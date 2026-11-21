@@ -2,13 +2,17 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { isValidPostPath, originFromSiteAddress } from '../src/lib/integration.js';
 import { removeMediaImages } from '../src/lib/media.js';
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 import { JSDOM } from 'jsdom';
 import { buildMediaRenderer } from '../src/embed/media-renderer.js';
 import { createBlogPages } from '../examples/customer-blog.js';
+import { demoBlogDev } from '../examples/build-demo-blog.js';
 
 const dashboard = readFileSync(new URL('../src/routes/dashboard/+page.svelte', import.meta.url), 'utf8');
 
@@ -229,6 +233,57 @@ test('static export uses directory canonicals and never overwrites existing outp
 		assert.match(sitemap, /<loc>https:\/\/customer\.test\/blog\/next-page\/<\/loc>/);
 		await assert.rejects(readFile(join(output, 'blog/withdrawn/index.html')), { code: 'ENOENT' });
 		await assert.rejects(pages.exportTo(output), { code: 'EEXIST' });
+	} finally {
+		await rm(temp, { recursive: true, force: true });
+	}
+});
+
+test('Vite serves the demo blog, post, and sitemap without a build', async () => {
+	const { createServer } = await import('vite');
+	const root = await mkdtemp(join(tmpdir(), 'statesu-demo-dev-'));
+	const server = await createServer({
+		root, configFile: false, envFile: false, plugins: [demoBlogDev()],
+		server: { host: '127.0.0.1', port: 0, ws: false },
+		optimizeDeps: { noDiscovery: true },
+		logLevel: 'silent'
+	});
+	try {
+		await server.listen();
+		const base = `http://127.0.0.1:${server.httpServer.address().port}/demo/blog/`;
+		const post = 'welcome-to-the-writing-desk/';
+		const index = await fetch(base);
+		assert.equal(index.status, 200);
+		assert.match(await index.text(), /href="\/demo\/blog\/welcome-to-the-writing-desk\/"/);
+		const article = await fetch(base + post);
+		assert.equal(article.status, 200);
+		assert.match(await article.text(), /<article><h1>Welcome to the Writing Desk<\/h1>/);
+		const sitemap = await fetch(base + 'sitemap.xml');
+		assert.equal(sitemap.status, 200);
+		assert.match(await sitemap.text(), /<loc>https:\/\/statesu\.com\/demo\/blog\/welcome-to-the-writing-desk\/<\/loc>/);
+		assert.equal((await fetch(base + 'missing/')).status, 404);
+	} finally {
+		await server.close();
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test('the demo build exports a crawlable sample blog at the nested demo path', async () => {
+	const temp = await mkdtemp(join(tmpdir(), 'statesu-demo-blog-'));
+	try {
+		const script = fileURLToPath(new URL('../examples/build-demo-blog.js', import.meta.url));
+		await promisify(execFile)(process.execPath, [script], { cwd: temp, env: { ...process.env, STATESU_DEMO_BLOG: '' } });
+		const output = join(temp, 'build/demo/blog');
+		const slug = 'welcome-to-the-writing-desk';
+		const index = await readFile(join(output, 'index.html'), 'utf8');
+		const post = await readFile(join(output, slug, 'index.html'), 'utf8');
+		const sitemap = await readFile(join(output, 'sitemap.xml'), 'utf8');
+		assert.match(index, /sample Statesu API data/);
+		assert.match(index, /href="\/demo\/blog\/welcome-to-the-writing-desk\/"/);
+		assert.match(post, /rel="canonical" href="https:\/\/statesu\.com\/demo\/blog\/welcome-to-the-writing-desk\/"/);
+		assert.match(post, /<article><h1>Welcome to the Writing Desk<\/h1><p>This sample post/);
+		assert.match(post, /href="\/docs\/integration#static-export"/);
+		assert.doesNotMatch(index + post, /<script\b/);
+		assert.match(sitemap, /<loc>https:\/\/statesu\.com\/demo\/blog\/welcome-to-the-writing-desk\/<\/loc>/);
 	} finally {
 		await rm(temp, { recursive: true, force: true });
 	}

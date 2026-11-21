@@ -1,4 +1,5 @@
 <script>
+	import Seo from '#lib/components/Seo.svelte';
 	import Terminal from '#lib/components/Terminal.svelte';
 
 	const install = `git clone https://github.com/burak-s/statesu.git
@@ -13,15 +14,16 @@ stscli --help`;
 stscli whoami`;
 </script>
 
-<svelte:head>
-	<title>CLI guide — Statesu</title>
-	<meta name="description" content="Install the Statesu CLI, connect your account, and write and publish Markdown from your terminal." />
-	<link rel="canonical" href="https://statesu.com/docs/cli" />
-</svelte:head>
+<Seo
+	title="Publish Markdown from Your Terminal"
+	description="Install the Statesu CLI (stscli) to write Markdown in your own editor, save drafts, and publish blog posts from the terminal without Git."
+	path="/docs/cli"
+	type="article"
+/>
 
 <section class="intro">
 	<p class="eyebrow">CLI guide</p>
-	<h1>Write from your terminal.</h1>
+	<h1>Publish Markdown from your terminal</h1>
 	<p class="lead">Use your favorite editor. Save drafts and publish without Git or a local content repository. Your posts live on the server.</p>
 </section>
 

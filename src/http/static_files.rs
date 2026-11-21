@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderValue, Method, StatusCode, header};
-use axum::response::{IntoResponse, Response};
+use axum::response::{IntoResponse, Redirect, Response};
 
 use crate::http::AppState;
 
@@ -67,25 +67,49 @@ pub async fn fallback(State(state): State<AppState>, request: Request) -> Respon
     if request.method() != Method::GET && !head_request {
         return not_allowed_response();
     }
-    let raw_path = request.uri().path().trim_start_matches('/');
-    let index = raw_path.is_empty() || raw_path == "index.html";
-    let lookup_path = if index {
+    let path = request.uri().path();
+    let raw_path = path.trim_start_matches('/');
+    let lookup_path = if raw_path.is_empty() {
         "index.html".to_owned()
     } else {
-        match clean_asset_path(raw_path) {
+        match clean_asset_path(raw_path.strip_suffix('/').unwrap_or(raw_path)) {
             Some(path) => path,
             None => return not_found_response(),
         }
     };
-    // Prerendered non-root pages are stored flat (`dashboard.html`), so a
-    // URL without an extension also resolves to `{path}.html`.
+    // SvelteKit emits flat pages (`dashboard.html`); the demo uses directory indexes.
     let Some((asset, resolved_path)) = resolve_assets(&state, &lookup_path) else {
         return not_found_response();
     };
-    let is_page = index || resolved_path.ends_with(".html");
+    let page = resolved_path.strip_suffix(".html");
+    if let Some(page) = page {
+        let canonical = if page == "index" {
+            "/".to_owned()
+        } else if let Some(directory) = page.strip_suffix("/index") {
+            format!("/{directory}/")
+        } else {
+            format!("/{page}")
+        };
+        if path != canonical {
+            let location = match request.uri().query() {
+                Some(query) => format!("{canonical}?{query}"),
+                None => canonical,
+            };
+            // Keep verification and CLI authorization query parameters, but
+            // only redirect when the underlying prerendered page exists.
+            let mut response = Redirect::permanent(&location).into_response();
+            response
+                .headers_mut()
+                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+            apply_docs_security_headers(&mut response, &state);
+            return response;
+        }
+    } else if raw_path.ends_with('/') {
+        return not_found_response();
+    }
     let cache_mode = if raw_path.starts_with("_app/immutable/") {
         CacheMode::Immutable
-    } else if is_page || raw_path.starts_with("embed/") {
+    } else if page.is_some() || raw_path.starts_with("embed/") {
         // HTML pages and the versioned embed script are referenced by user
         // sites; both must revalidate so a deployed build never serves a
         // stale integration contract.
@@ -98,6 +122,13 @@ pub async fn fallback(State(state): State<AppState>, request: Request) -> Respon
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type);
+    // The verification page is client-only, so its Svelte meta tag is
+    // absent from the initial HTML. Crawlers can see this without JavaScript.
+    builder = match page {
+        Some("dashboard" | "verify") => builder.header("x-robots-tag", "noindex"),
+        Some("cli/authorize") => builder.header("x-robots-tag", "noindex, nofollow"),
+        _ => builder,
+    };
     builder = match cache_mode {
         CacheMode::NoCache => builder.header(header::CACHE_CONTROL, "no-cache"),
         CacheMode::Immutable => {
@@ -117,16 +148,19 @@ pub async fn fallback(State(state): State<AppState>, request: Request) -> Respon
     response
 }
 
-/// First lookup hit for a clean path, with a `.html` extension fallback for
-/// prerendered pages; returns the asset and the path it was found at.
+/// First lookup hit for a clean path, with directory and flat HTML fallbacks.
 fn resolve_assets(state: &AppState, lookup_path: &str) -> Option<(StaticFile, String)> {
     state
         .assets
         .get(lookup_path)
         .map(|asset| (asset, lookup_path.to_owned()))
         .or_else(|| {
-            let with_html = format!("{lookup_path}.html");
-            state.assets.get(&with_html).map(|asset| (asset, with_html))
+            [
+                format!("{lookup_path}/index.html"),
+                format!("{lookup_path}.html"),
+            ]
+            .into_iter()
+            .find_map(|path| state.assets.get(&path).map(|asset| (asset, path)))
         })
 }
 

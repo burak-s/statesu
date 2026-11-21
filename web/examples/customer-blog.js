@@ -1,4 +1,4 @@
-// Runs on the customer's host (or in their build), never on Statesu.
+// Runs on the blog owner's host or at build time.
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { join } from 'node:path';
@@ -25,13 +25,25 @@ function validPost(post) {
 	return validBlogSlug(post?.slug) && typeof post.title === 'string' && typeof post.content_markdown === 'string';
 }
 
-export function createBlogPages({ site, blog, api = 'https://statesu.com', basePath, indexPath, excludedSlugs = [], lang = 'en', fetcher = globalThis.fetch }) {
+// The HTML renderer can sit under a nested path without changing the embed's
+// single-segment configuration or the dashboard validation.
+function parsePagePath(value) {
+	if (typeof value === 'string' && /^\/[a-z0-9-]+(?:\/[a-z0-9-]+)+\/?$/.test(value)) {
+		return value.replace(/\/$/, '');
+	}
+	return parseBasePath(value);
+}
+
+export function createBlogPages({
+	site, blog, api = 'https://statesu.com', basePath, indexPath, excludedSlugs = [], lang = 'en',
+	fetcher = globalThis.fetch, title = 'Blog', description = 'Published posts', stylesheet
+}) {
 	if (!validBlogSlug(blog)) throw new Error('Expected a Statesu blog slug');
 	const siteOrigin = origin(site);
 	if (!/^[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*$/.test(lang)) throw new Error('Expected a language tag, e.g. en or tr');
-	const base = parseBasePath(basePath);
+	const base = parsePagePath(basePath);
 	const prefix = base === '/' ? '' : base;
-	const index = indexPath === undefined ? base : parseBasePath(indexPath);
+	const index = indexPath === undefined ? base : parsePagePath(indexPath);
 	const indexDirectory = index === '/' ? '/' : `${index}/`;
 	const postsApi = `${origin(api)}/public/blogs/${blog}/posts`;
 	const sitemapPath = `${indexDirectory}sitemap.xml`;
@@ -76,12 +88,12 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 <meta property="og:type" content="${article ? 'article' : 'website'}">
 <meta property="og:title" content="${text}"><meta property="og:description" content="${summary}">
 <meta property="og:url" content="${address}">${image ? `\n<meta property="og:image" content="${escapeMarkup(image)}">` : ''}
-</head><body><main>${body}</main></body></html>`;
+${stylesheet ? `<link rel="stylesheet" href="${escapeMarkup(stylesheet)}">\n` : ''}</head><body><main>${body}</main></body></html>`;
 	}
 
 	function renderIndex(posts, directoryUrls) {
 		const links = posts.map(post => `<li><a href="${pagePath(post.slug, directoryUrls)}">${escapeMarkup(post.title)}</a></li>`).join('\n');
-		return html({ title: 'Blog', description: 'Published posts', url: canonical(null, directoryUrls), body: `<h1>Blog</h1><ul>${links}</ul>` });
+		return html({ title, description, url: canonical(null, directoryUrls), body: `<h1>${escapeMarkup(title)}</h1><p>${escapeMarkup(description)}</p><ul>${links}</ul>` });
 	}
 
 	function renderPost(post, directoryUrls) {
@@ -95,7 +107,7 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 			article.innerHTML = content;
 			const excerpt = article.querySelector('p')?.textContent?.trim() || article.textContent.trim() || post.title;
 			const description = [...excerpt.replace(/\s+/g, ' ')].slice(0, 160).join('');
-			const body = `<nav><a href="${pagePath(null, directoryUrls)}">Blog</a></nav><article><h1>${escapeMarkup(post.title)}</h1>${content}</article>`;
+			const body = `<nav><a href="${pagePath(null, directoryUrls)}">${escapeMarkup(title)}</a></nav><article><h1>${escapeMarkup(post.title)}</h1>${content}</article>`;
 			return html({ title: post.title, description, url, body, article: true, image: article.querySelector('img')?.getAttribute('src') });
 		} finally {
 			window.close();
@@ -107,7 +119,7 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 		return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${urls.join('\n')}\n</urlset>\n`;
 	}
 
-	async function respond(path, method = 'GET') {
+	async function respond(path, method = 'GET', directoryUrls = false) {
 		// Use the configured origin, not Host or X-Forwarded-Host, for metadata.
 		if (typeof path !== 'string' || !path.startsWith('/') || path.startsWith('//')) {
 			return new Response(null, { status: 400 });
@@ -128,13 +140,13 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 			if (sitemap || isIndex) {
 				const posts = await listPosts();
 				if (posts === null) return notFound();
-				return sitemap ? reply(200, renderSitemap(posts, false), 'application/xml') : reply(200, renderIndex(posts, false), 'text/html');
+				return sitemap ? reply(200, renderSitemap(posts, directoryUrls), 'application/xml') : reply(200, renderIndex(posts, directoryUrls), 'text/html');
 			}
 			if (route.kind !== 'post') return notFound();
 			const { post, error } = await load(`${postsApi}/${route.slug}`);
 			if (error?.status === 404) return notFound();
 			if (!validPost(post) || post.slug !== route.slug) return unavailable();
-			return reply(200, renderPost(post, false), 'text/html');
+			return reply(200, renderPost(post, directoryUrls), 'text/html');
 		} catch {
 			return unavailable();
 		}
