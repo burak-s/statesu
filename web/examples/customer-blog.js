@@ -25,18 +25,24 @@ function validPost(post) {
 	return validBlogSlug(post?.slug) && typeof post.title === 'string' && typeof post.content_markdown === 'string';
 }
 
-export function createBlogPages({ site, blog, api = 'https://statesu.com', basePath, lang = 'en', fetcher = globalThis.fetch }) {
+export function createBlogPages({ site, blog, api = 'https://statesu.com', basePath, indexPath, excludedSlugs = [], lang = 'en', fetcher = globalThis.fetch }) {
 	if (!validBlogSlug(blog)) throw new Error('Expected a Statesu blog slug');
 	const siteOrigin = origin(site);
 	if (!/^[a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*$/.test(lang)) throw new Error('Expected a language tag, e.g. en or tr');
 	const base = parseBasePath(basePath);
 	const prefix = base === '/' ? '' : base;
+	const index = indexPath === undefined ? base : parseBasePath(indexPath);
+	const indexDirectory = index === '/' ? '/' : `${index}/`;
 	const postsApi = `${origin(api)}/public/blogs/${blog}/posts`;
-	const sitemapPath = `${prefix}/sitemap.xml`;
-	const pagePath = (slug, directoryUrls) => {
-		if (!slug) return `${prefix}/`;
-		return `${prefix}/${slug}${directoryUrls ? '/' : ''}`;
-	};
+	const sitemapPath = `${indexDirectory}sitemap.xml`;
+	if (!Array.isArray(excludedSlugs) || !excludedSlugs.every(validBlogSlug)) {
+		throw new Error('Expected excluded post slugs, e.g. about or announced');
+	}
+	const excluded = new Set(excludedSlugs);
+	const pagePath = (slug, directoryUrls) => slug
+		? `${prefix}/${slug}${directoryUrls ? '/' : ''}`
+		: indexDirectory;
+	const canServePost = slug => !excluded.has(slug) && pagePath(slug, false) !== index;
 	const canonical = (slug, directoryUrls) => `${siteOrigin}${pagePath(slug, directoryUrls)}`;
 	const load = url => fetchPostJson(fetcher, url, FETCH_TIMEOUT_MS);
 
@@ -51,7 +57,9 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 				!Number.isSafeInteger(listing.total) || listing.total < 0 || listing.page !== page || listing.size !== size) {
 				throw new Error('Could not load published posts');
 			}
-			for (const post of listing.items) posts.set(post.slug, post);
+			for (const post of listing.items) {
+				if (canServePost(post.slug)) posts.set(post.slug, post);
+			}
 			if (page * size >= listing.total || listing.items.length === 0) return [...posts.values()];
 		}
 	}
@@ -106,8 +114,10 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 		}
 		const requestUrl = new URL(siteOrigin + path);
 		const sitemap = requestUrl.pathname === sitemapPath;
+		const isIndex = requestUrl.pathname === index || requestUrl.pathname === indexDirectory;
 		const route = resolveSlug(requestUrl, base);
-		if (!sitemap && route.kind === 'skip') return null;
+		if (!sitemap && !isIndex && (route.kind === 'skip' || route.kind === 'empty' ||
+			(route.kind === 'post' && !canServePost(route.slug)))) return null;
 		const reply = (status, body, type = 'text/plain', headers = {}) => new Response(method === 'HEAD' ? null : body, {
 			status, headers: { 'Content-Type': `${type}; charset=utf-8`, 'Cache-Control': 'no-store', ...headers }
 		});
@@ -115,7 +125,7 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 		const unavailable = () => reply(503, 'Blog temporarily unavailable');
 		if (method !== 'GET' && method !== 'HEAD') return reply(405, 'Method not allowed', 'text/plain', { Allow: 'GET, HEAD' });
 		try {
-			if (sitemap || route.kind === 'empty') {
+			if (sitemap || isIndex) {
 				const posts = await listPosts();
 				if (posts === null) return notFound();
 				return sitemap ? reply(200, renderSitemap(posts, false), 'application/xml') : reply(200, renderIndex(posts, false), 'text/html');
@@ -135,12 +145,14 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 		if (posts === null) throw new Error('Blog not found');
 		// Never overwrite a customer site or reuse stale files from a previous build.
 		await mkdir(output);
-		const directory = prefix ? join(output, prefix.slice(1)) : output;
-		if (prefix) await mkdir(directory);
-		await writeFile(join(directory, 'index.html'), renderIndex(posts, true));
-		await writeFile(join(directory, 'sitemap.xml'), renderSitemap(posts, true));
+		const indexOutput = join(output, index.slice(1));
+		await mkdir(indexOutput, { recursive: true });
+		await writeFile(join(indexOutput, 'index.html'), renderIndex(posts, true));
+		await writeFile(join(indexOutput, 'sitemap.xml'), renderSitemap(posts, true));
+		const postsOutput = join(output, prefix.slice(1));
+		await mkdir(postsOutput, { recursive: true });
 		for (const post of posts) {
-			const folder = join(directory, post.slug);
+			const folder = join(postsOutput, post.slug);
 			await mkdir(folder);
 			await writeFile(join(folder, 'index.html'), renderPost(post, true));
 		}
@@ -152,10 +164,13 @@ export function createBlogPages({ site, blog, api = 'https://statesu.com', baseP
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
 	const { values } = parseArgs({ options: {
 		site: { type: 'string' }, blog: { type: 'string' }, api: { type: 'string' },
-		'base-path': { type: 'string' }, lang: { type: 'string' },
+		'base-path': { type: 'string' }, 'index-path': { type: 'string' },
+		'exclude-slug': { type: 'string', multiple: true }, lang: { type: 'string' },
 		port: { type: 'string', default: '3000' }, export: { type: 'string' }
 	} });
-	const pages = createBlogPages({ ...values, basePath: values['base-path'] });
+	const pages = createBlogPages({
+		...values, basePath: values['base-path'], indexPath: values['index-path'], excludedSlugs: values['exclude-slug']
+	});
 	if (values.export) {
 		await pages.exportTo(values.export);
 	} else {

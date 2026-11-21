@@ -99,7 +99,7 @@ const post = {
 };
 const secondPost = { ...post, slug: 'next-page', title: 'Another post' };
 
-function blogPages(overrides = {}) {
+function blogPages(overrides = {}, extraPosts = []) {
 	return createBlogPages({
 		site: 'https://customer.test', blog: 'writing-desk', api: 'https://api.test',
 		fetcher: async (input, options) => {
@@ -112,7 +112,7 @@ function blogPages(overrides = {}) {
 				const page = Number(url.searchParams.get('page'));
 				assert.equal(url.searchParams.get('size'), '100');
 				// Force the second page to keep discovery and export pagination covered.
-				return Response.json({ items: page === 1 ? [post] : [secondPost], page, size: 100, total: 101 });
+				return Response.json({ items: page === 1 ? [post] : [secondPost, ...extraPosts], page, size: 100, total: 101 + extraPosts.length });
 			}
 			if (url.pathname === `${endpoint}/${post.slug}`) return Response.json(post);
 			if (url.pathname === `${endpoint}/upstream-error`) return new Response(null, { status: 429 });
@@ -176,6 +176,43 @@ test('customer routes distinguish unavailable API from missing posts and leave o
 	assert.equal(await head.text(), '');
 	const offline = blogPages({ fetcher: async () => { throw new Error('network down'); } });
 	assert.equal((await offline.respond('/blog/sitemap.xml')).status, 503);
+});
+
+test('root posts, blog index and existing site routes stay separate in SSR and export', async () => {
+	const pages = blogPages({ basePath: '/', indexPath: '/blog', excludedSlugs: ['about'] }, [
+		{ ...post, slug: 'about', title: 'Reserved site page' },
+		{ ...post, slug: 'blog', title: 'Conflicting index slug' }
+	]);
+	assert.equal(await pages.respond('/'), null);
+	assert.equal(await pages.respond('/about/?x=1'), null);
+	assert.equal((await pages.respond('/missing')).status, 404);
+	const article = await pages.respond('/hello-world');
+	assert.equal(article.status, 200);
+	const html = await article.text();
+	assert.match(html, /rel="canonical" href="https:\/\/customer\.test\/hello-world"/);
+	assert.match(html, /<nav><a href="\/blog\/">/);
+	const index = await pages.respond('/blog');
+	assert.equal(index.status, 200);
+	const indexHtml = await index.text();
+	assert.match(indexHtml, /href="\/hello-world"/);
+	assert.doesNotMatch(indexHtml, /Reserved site page|Conflicting index slug/);
+	const sitemap = await (await pages.respond('/blog/sitemap.xml')).text();
+	assert.match(sitemap, /<loc>https:\/\/customer\.test\/blog\/<\/loc>/);
+	assert.match(sitemap, /<loc>https:\/\/customer\.test\/hello-world<\/loc>/);
+	assert.doesNotMatch(sitemap, /\/about|\/blog<\/loc>/);
+
+	const temp = await mkdtemp(join(tmpdir(), 'statesu-root-blog-'));
+	try {
+		const output = join(temp, 'fresh');
+		await pages.exportTo(output);
+		await assert.rejects(readFile(join(output, 'index.html')), { code: 'ENOENT' });
+		await assert.rejects(readFile(join(output, 'about/index.html')), { code: 'ENOENT' });
+		assert.match(await readFile(join(output, 'blog/index.html'), 'utf8'), /href="\/hello-world\/"/);
+		assert.match(await readFile(join(output, 'blog/sitemap.xml'), 'utf8'), /<loc>https:\/\/customer\.test\/hello-world\/<\/loc>/);
+		assert.match(await readFile(join(output, 'hello-world/index.html'), 'utf8'), /rel="canonical" href="https:\/\/customer\.test\/hello-world\/"/);
+	} finally {
+		await rm(temp, { recursive: true, force: true });
+	}
 });
 
 test('static export uses directory canonicals and never overwrites existing output', async () => {

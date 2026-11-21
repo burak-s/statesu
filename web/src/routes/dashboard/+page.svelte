@@ -1241,6 +1241,7 @@
 				<section class="panel" id="integration" aria-labelledby="integration-heading">
 					<h2 id="integration-heading">Website integration</h2>
 						<p>Show published posts on your website with a single embed snippet.</p>
+						<p><strong>SEO on your own domain:</strong> The embed loads posts after JavaScript runs. To serve post content and metadata in the initial HTML, set up <a href="/docs/integration#search">server-side rendering (SSR) or static export</a> on your website. No setting is required in Statesu.</p>
 						<div class="stack">
 						<label for="integration-origin">Website address</label>
 						<input id="integration-origin" bind:value={integrationOriginDraft} placeholder="burakselcuk.me" />

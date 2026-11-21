@@ -30,7 +30,7 @@
 	<p class="eyebrow">Web integration</p>
 	<h1>Your posts.<br />Your frontend.</h1>
 	<p class="lead">Use one embed script to display posts, or fetch public JSON and render it yourself. No token belongs in your website code.</p>
-	<p>Want your posts indexed on your own domain? <a href="#search">Serve post HTML on your site</a> instead of using the script for individual post pages.</p>
+	<p>Want search engines to find posts on your own domain? See <a href="#search">SEO for posts on your own domain</a>.</p>
 </section>
 
 <section>
@@ -96,15 +96,20 @@
 </section>
 
 <section id="search">
-	<h2>Serve posts for search and link previews</h2>
-	<p>The embed adds the post after JavaScript runs. For indexable posts on your own domain, serve the post body and metadata in the initial HTML. Use the <a href="https://github.com/burak-s/statesu/blob/HEAD/web/examples/customer-blog.js">example blog renderer</a> from the Statesu repository. It reads the existing public JSON API without a token or browser CORS setup and does not host pages on Statesu.</p>
-	<h3>Render on request</h3>
+	<h2>SEO for posts on your own domain</h2>
+	<p>The embed adds the post after JavaScript runs. Serving the post body and metadata in the initial HTML lets crawlers and link-preview services read them without running JavaScript. This makes posts easier to crawl; it does not guarantee indexing.</p>
+	<p>The <a href="https://github.com/burak-s/statesu/blob/HEAD/web/examples/customer-blog.js">example blog renderer</a> uses the public JSON API without a token or browser CORS setup. Both server-side rendering and static export serve complete HTML on your domain, not on Statesu. Choose based on how you want updates to go live: SSR fetches content on each request, while static export needs a rebuild and redeploy when content changes.</p>
+	<h3>Server-side rendering (SSR)</h3>
+	<p>Your server fetches posts from Statesu and sends complete HTML in the first response.</p>
 	<Terminal code={'cd web\nnpm ci\nnode examples/customer-blog.js --site https://example.com --blog writing-desk\ncurl -i http://127.0.0.1:3000/blog/hello-world'} language="text" />
-	<p>Run it next to your website and forward <code>/blog</code> and <code>/blog/*</code> to it instead of the old <code>blog.html</code> rewrite. Or import <code>createBlogPages</code> in your own Node server and use its <code>respond(path, method)</code> handler for those routes. The example accepts <code>--base-path</code> to match a different embed prefix, <code>--lang</code> for the page language, and <code>--api</code> for a self-hosted Statesu origin. If your existing posts are at the root, route only the paths you intend to replace so this integration does not take over your homepage or other pages.</p>
+	<p>Run it next to your website and forward <code>/blog</code> and <code>/blog/*</code> to it instead of the old <code>blog.html</code> rewrite. Or import <code>createBlogPages</code> in your own Node server and use its <code>respond(path, method)</code> handler for those routes. The example accepts <code>--base-path</code> to match a different embed prefix, <code>--lang</code> for the page language, and <code>--api</code> for a self-hosted Statesu origin.</p>
 	<p>The blog index links to posts. Missing and unpublished posts return HTTP <code>404</code>; temporary API failures return <code>503</code>. Link to the blog from your site and submit <code>https://example.com/blog/sitemap.xml</code> or add it to your sitemap index.</p>
-	<h3>Generate static files</h3>
+	<h3>Keep existing root-level post URLs</h3>
+	<Terminal code={'node examples/customer-blog.js --site https://example.com --blog writing-desk \\\n  --base-path / --index-path /blog --exclude-slug about --exclude-slug announced'} language="text" />
+	<p><code>--base-path /</code> keeps posts at URLs like <code>/hello-world</code>, while <code>--index-path /blog</code> puts the list and sitemap under <code>/blog</code> and leaves the homepage alone. Route your existing pages and assets before your post routes. Repeat <code>--exclude-slug</code> for existing one-segment routes that would otherwise conflict; excluded posts appear in neither the list nor the sitemap or export. Without <code>--index-path</code>, the blog index stays at the base path.</p>
+	<h3>Static export</h3>
 	<Terminal code={'# Use a fresh output directory on each build.\nnode examples/customer-blog.js --site https://example.com --blog writing-desk --export blog-output'} language="text" />
-	<p>Deploy the contents of <code>blog-output/</code> alongside your site. The example writes directory indexes such as <code>blog/hello-world/index.html</code> and uses <code>/blog/hello-world/</code> as the canonical URL. Configure your host to serve directory indexes and redirect the old slashless URLs if it does not already. Remove the old rewrite so missing files return a real <code>404</code>. Regenerate and replace the previous blog output on every publish, edit, unpublish or deletion; otherwise old pages may still be live.</p>
+	<p>Deploy the contents of <code>blog-output/</code> alongside your site. The example writes directory indexes such as <code>blog/hello-world/index.html</code> and uses <code>/blog/hello-world/</code> as the canonical URL. Configure your host to serve directory indexes and redirect the old slashless URLs if it does not already. Remove the old rewrite so missing files return a real <code>404</code>. With the root-level options above, export writes <code>blog/index.html</code> for the list and does not generate a homepage. Regenerate and replace the previous blog output on every publish, edit, unpublish or deletion; otherwise old pages may still be live.</p>
 	<p>Both setups keep the embed available for other pages, such as homepage announcements. The generated blog HTML uses your site's template and CSS if you integrate it into your server or adapt the example; it does not automatically apply the embed's saved appearance.</p>
 </section>
 
