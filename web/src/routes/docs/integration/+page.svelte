@@ -30,6 +30,7 @@
 	<p class="eyebrow">Web integration</p>
 	<h1>Your posts.<br />Your frontend.</h1>
 	<p class="lead">Use one embed script to display posts, or fetch public JSON and render it yourself. No token belongs in your website code.</p>
+	<p>Want your posts indexed on your own domain? <a href="#search">Serve post HTML on your site</a> instead of using the script for individual post pages.</p>
 </section>
 
 <section>
@@ -92,6 +93,19 @@
 	<Terminal code={'# Netlify _redirects\n/blog/*      /blog.html   200\n\n# vercel.json\n{ "rewrites": [{ "source": "/blog/:path*", "destination": "/blog.html" }] }\n\n# Nginx (inside your site server block)\nlocation /blog/ {\n    try_files $uri /blog.html;\n}'} language="text" />
 	<p>Open a published deep link directly and refresh it to check the setup. The base path shows an empty state; draft, withdrawn and deleted posts show a not-found state.</p>
 	<p>For root-level URLs like <code>/hello-world</code>, set <code>data-base-path="/"</code>. Rewrite only unknown single-segment paths so existing pages keep working.</p>
+</section>
+
+<section id="search">
+	<h2>Serve posts for search and link previews</h2>
+	<p>The embed adds the post after JavaScript runs. For indexable posts on your own domain, serve the post body and metadata in the initial HTML. Use the <a href="https://github.com/burak-s/statesu/blob/HEAD/web/examples/customer-blog.js">example blog renderer</a> from the Statesu repository. It reads the existing public JSON API without a token or browser CORS setup and does not host pages on Statesu.</p>
+	<h3>Render on request</h3>
+	<Terminal code={'cd web\nnpm ci\nnode examples/customer-blog.js --site https://example.com --blog writing-desk\ncurl -i http://127.0.0.1:3000/blog/hello-world'} language="text" />
+	<p>Run it next to your website and forward <code>/blog</code> and <code>/blog/*</code> to it instead of the old <code>blog.html</code> rewrite. Or import <code>createBlogPages</code> in your own Node server and use its <code>respond(path, method)</code> handler for those routes. The example accepts <code>--base-path</code> to match a different embed prefix, <code>--lang</code> for the page language, and <code>--api</code> for a self-hosted Statesu origin. If your existing posts are at the root, route only the paths you intend to replace so this integration does not take over your homepage or other pages.</p>
+	<p>The blog index links to posts. Missing and unpublished posts return HTTP <code>404</code>; temporary API failures return <code>503</code>. Link to the blog from your site and submit <code>https://example.com/blog/sitemap.xml</code> or add it to your sitemap index.</p>
+	<h3>Generate static files</h3>
+	<Terminal code={'# Use a fresh output directory on each build.\nnode examples/customer-blog.js --site https://example.com --blog writing-desk --export blog-output'} language="text" />
+	<p>Deploy the contents of <code>blog-output/</code> alongside your site. The example writes directory indexes such as <code>blog/hello-world/index.html</code> and uses <code>/blog/hello-world/</code> as the canonical URL. Configure your host to serve directory indexes and redirect the old slashless URLs if it does not already. Remove the old rewrite so missing files return a real <code>404</code>. Regenerate and replace the previous blog output on every publish, edit, unpublish or deletion; otherwise old pages may still be live.</p>
+	<p>Both setups keep the embed available for other pages, such as homepage announcements. The generated blog HTML uses your site's template and CSS if you integrate it into your server or adapt the example; it does not automatically apply the embed's saved appearance.</p>
 </section>
 
 <section>
